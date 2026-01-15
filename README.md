@@ -27,6 +27,13 @@ cd sweetmemerep
 pip install -r requirements.txt
 ```
 
+3. **Set up automatic hourly tracking** (recommended):
+```bash
+./setup_tracking.sh
+```
+
+This sets up automatic performance tracking every hour so your source stats are always up-to-date. The tracker runs in the background via cron (Linux) or launchd (macOS).
+
 That's it! No API keys needed.
 
 ## Quick Start
@@ -103,29 +110,33 @@ Tier   Source                    Calls    Traded   Win%     Avg Gain     Rug%
 
 ## Performance Tracking
 
-To get accurate source statistics with real win rates and gains, use the automated performance tracker:
+The system automatically tracks token performance **every hour in the background** (if you ran `./setup_tracking.sh` during installation). This means whenever you check source stats in the analyzer, the data is fresh and up-to-date!
 
+**What it tracks automatically:**
+- Current prices at 1h, 24h, 7d, and 30d intervals
+- Max gains and losses observed
+- Rug pull detection (liquidity drops or 99%+ crashes)
+- Token survival status
+- Updates all source statistics with real win rates
+
+**Manual tracking** (if needed):
 ```bash
-# Update all tokens
+# Update all tokens now
 python3 performance_tracker.py
 
 # Update only recent 10 tokens
 python3 performance_tracker.py --limit 10
 
-# Update only tokens older than 24 hours
-python3 performance_tracker.py --min-age 24
-
-# Show summary without updates
+# Show summary
 python3 performance_tracker.py --summary
 ```
 
-**What it tracks:**
-- Current prices at 1h, 24h, 7d, and 30d intervals
-- Max gains and losses observed
-- Rug pull detection (liquidity drops or 99%+ crashes)
-- Token survival status
+**Setup automatic tracking** (if you skipped it):
+```bash
+./setup_tracking.sh
+```
 
-**Automation**: See `PERFORMANCE_TRACKING.md` for cron/launchd setup to run automatically.
+See `PERFORMANCE_TRACKING.md` for advanced configuration.
 
 ## Safety Score Calculation
 
@@ -189,6 +200,7 @@ sweetmemerep/
 ├── database.py                # SQLite database manager
 ├── data_fetcher.py            # API data fetching
 ├── performance_tracker.py     # Automated performance tracking
+├── setup_tracking.sh          # One-click setup for hourly tracking
 ├── requirements.txt           # Python dependencies
 ├── test_e2e.py               # End-to-end tests
 ├── README.md                 # This file
