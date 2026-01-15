@@ -8,6 +8,7 @@ A comprehensive CLI tool for analyzing memecoin trading opportunities on Solana 
 - **Safety Scoring**: Automated safety score (0-10) based on multiple risk factors
 - **Red Flag Detection**: Automatic detection of critical risks (low liquidity, mint authority, whale concentration)
 - **Decision Tracking**: Record your trading decisions with notes and emotional state
+- **Watchlist Monitoring**: Track tokens marked as "WATCH" and monitor their performance before entering
 - **Source Performance**: Track which sources provide the best calls over time
 - **Performance Tracking**: Automated script to track token prices over time (1h, 24h, 7d, 30d)
 - **Rug Pull Detection**: Automatic detection of rugged tokens via liquidity drops
@@ -49,7 +50,8 @@ You'll see the main menu:
 Options:
   [1] Analyze new call
   [2] View source stats
-  [3] Exit
+  [3] Watchlist performance
+  [4] Exit
 ```
 
 ## Usage
@@ -107,6 +109,47 @@ Tier   Source                    Calls    Traded   Win%     Avg Gain     Rug%
 🥈 B    Discord Degen             15       12       41.7%      2.1%      13.3%
 🥉 C    Random Twitter            8        3        33.3%      0.8%      37.5%
 ```
+
+### Monitoring Your Watchlist
+
+Select option `[3]` to see all tokens you marked as "WATCH" and their current performance:
+
+```
+👀 WATCHLIST PERFORMANCE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📋 Watching 3 token(s)
+
+────────────────────────────────────────────────────────────
+[1] $PEPE - Pepe Coin
+    📍 Source: Discord Degen
+    🔗 4k3Dyjzvzp8eMZWUXbBC...
+    🟢 Safety Score: 8.0/10 (GOOD)
+    💧 Entry Liquidity: $85.0K
+    ⏱️  Added: 2h ago
+    📝 Notes: Good early metrics, watching for entry
+    📈 Best Performance: +185.00%
+    🚀 MAJOR PUMP - Consider entry!
+    🔄 Last updated: 15m ago
+
+[2] $BONK - Bonk
+    📍 Source: Alpha Calls
+    🟢 Safety Score: 9.5/10 (GOOD)
+    💧 Entry Liquidity: $1.50M
+    ⏱️  Added: 1d ago
+    📈 Best Performance: +12.50%
+    ✅ Positive movement
+    🔄 Last updated: 8m ago
+
+💡 Tip: Tokens showing strong gains may be good entry opportunities!
+```
+
+**Watchlist Benefits:**
+- Track tokens before committing capital
+- Get alerted to major pumps (+100%, +500%, etc.)
+- Monitor multiple opportunities simultaneously
+- Automatic rug pull detection
+- See performance trends over time
 
 ## Performance Tracking
 

@@ -28,7 +28,8 @@ class MemecoinAnalyzer:
         print("\nOptions:")
         print("  [1] Analyze new call")
         print("  [2] View source stats")
-        print("  [3] Exit")
+        print("  [3] Watchlist performance")
+        print("  [4] Exit")
         print()
 
     def get_safety_rating(self, score: float) -> tuple:
@@ -285,6 +286,112 @@ class MemecoinAnalyzer:
 
             print(f"{tier_emoji} {tier:<4} {name:<25} {total:<8} {traded:<8} {win_rate:>6.1f}% {avg_gain:>10.1f}% {rug_rate:>6.1f}%")
 
+    def view_watchlist(self):
+        """Display performance of all tokens in watchlist."""
+        print("\n" + "━"*60)
+        print("👀 WATCHLIST PERFORMANCE")
+        print("━"*60)
+
+        # Query all WATCH decisions with token data
+        self.db.cursor.execute('''
+            SELECT
+                c.call_id,
+                c.token_symbol,
+                c.token_name,
+                c.contract_address,
+                c.source,
+                s.price_usd as entry_price,
+                s.snapshot_timestamp,
+                s.safety_score,
+                s.liquidity_usd as entry_liquidity,
+                d.timestamp_decision,
+                d.reasoning_notes,
+                d.confidence_level,
+                p.max_gain_observed,
+                p.max_loss_observed,
+                p.token_still_alive,
+                p.rug_pull_occurred,
+                p.last_updated
+            FROM calls_received c
+            JOIN my_decisions d ON c.call_id = d.call_id
+            JOIN initial_snapshot s ON c.call_id = s.call_id
+            LEFT JOIN performance_tracking p ON c.call_id = p.call_id
+            WHERE d.my_decision = 'WATCH'
+            ORDER BY d.timestamp_decision DESC
+        ''')
+
+        watchlist = [dict(row) for row in self.db.cursor.fetchall()]
+
+        if not watchlist:
+            print("\n⚠️  Your watchlist is empty. Mark tokens as WATCH to track them!")
+            return
+
+        print(f"\n📋 Watching {len(watchlist)} token(s)\n")
+
+        for i, token in enumerate(watchlist, 1):
+            # Header for each token
+            print("─"*60)
+            print(f"[{i}] ${token['token_symbol']} - {token['token_name']}")
+            print(f"    📍 Source: {token['source']}")
+            print(f"    🔗 {token['contract_address'][:20]}...")
+
+            # Safety and entry info
+            safety_score = token['safety_score'] or 0
+            rating, emoji = self.get_safety_rating(safety_score)
+            print(f"    {emoji} Safety Score: {safety_score:.1f}/10 ({rating})")
+            print(f"    💧 Entry Liquidity: {self.format_currency(token['entry_liquidity'])}")
+
+            # Decision info
+            from datetime import datetime
+            decision_time = datetime.fromisoformat(token['timestamp_decision'])
+            days_ago = (datetime.now() - decision_time).days
+            hours_ago = (datetime.now() - decision_time).seconds // 3600
+
+            if days_ago > 0:
+                print(f"    ⏱️  Added: {days_ago}d ago")
+            else:
+                print(f"    ⏱️  Added: {hours_ago}h ago")
+
+            if token['reasoning_notes']:
+                print(f"    📝 Notes: {token['reasoning_notes'][:50]}")
+
+            # Performance tracking
+            if token['rug_pull_occurred'] == 'yes':
+                print(f"    🚨 RUG PULL DETECTED - Token rugged!")
+            elif token['token_still_alive'] == 'no':
+                print(f"    ❌ Token no longer exists")
+            elif token['max_gain_observed'] is not None:
+                gain = token['max_gain_observed']
+                loss = token['max_loss_observed'] or 0
+
+                if gain > 0:
+                    print(f"    📈 Best Performance: +{gain:.2f}%")
+                if loss < 0:
+                    print(f"    📉 Worst Drop: {loss:.2f}%")
+
+                # Status indicator
+                if gain > 100:
+                    print(f"    🚀 MAJOR PUMP - Consider entry!")
+                elif gain > 50:
+                    print(f"    ⬆️  Strong pump - Good opportunity")
+                elif gain > 0:
+                    print(f"    ✅ Positive movement")
+                elif loss < -50:
+                    print(f"    ⚠️  Major dump - May be dead")
+                else:
+                    print(f"    ➡️  Stable/Minor movement")
+
+                if token['last_updated']:
+                    update_time = datetime.fromisoformat(token['last_updated'])
+                    update_mins_ago = (datetime.now() - update_time).seconds // 60
+                    print(f"    🔄 Last updated: {update_mins_ago}m ago")
+            else:
+                print(f"    ⏳ Waiting for performance data...")
+                print(f"    💡 Run: python3 performance_tracker.py")
+
+        print("─"*60)
+        print(f"\n💡 Tip: Tokens showing strong gains may be good entry opportunities!")
+
     def run(self):
         """Main application loop."""
         self.print_header()
@@ -298,11 +405,13 @@ class MemecoinAnalyzer:
             elif choice == '2':
                 self.view_source_stats()
             elif choice == '3':
+                self.view_watchlist()
+            elif choice == '4':
                 print("\n👋 Goodbye! Happy trading!")
                 self.db.close()
                 sys.exit(0)
             else:
-                print("⚠️  Invalid choice. Please enter 1, 2, or 3.")
+                print("⚠️  Invalid choice. Please enter 1, 2, 3, or 4.")
 
 
 def main():
