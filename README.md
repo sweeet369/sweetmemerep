@@ -9,6 +9,8 @@ A comprehensive CLI tool for analyzing memecoin trading opportunities on Solana 
 - **Red Flag Detection**: Automatic detection of critical risks (low liquidity, mint authority, whale concentration)
 - **Decision Tracking**: Record your trading decisions with notes and emotional state
 - **Source Performance**: Track which sources provide the best calls over time
+- **Performance Tracking**: Automated script to track token prices over time (1h, 24h, 7d, 30d)
+- **Rug Pull Detection**: Automatic detection of rugged tokens via liquidity drops
 - **SQLite Database**: All data saved locally for historical analysis
 - **No API Keys Required**: Uses free public APIs
 
@@ -99,6 +101,32 @@ Tier   Source                    Calls    Traded   Win%     Avg Gain     Rug%
 🥉 C    Random Twitter            8        3        33.3%      0.8%      37.5%
 ```
 
+## Performance Tracking
+
+To get accurate source statistics with real win rates and gains, use the automated performance tracker:
+
+```bash
+# Update all tokens
+python3 performance_tracker.py
+
+# Update only recent 10 tokens
+python3 performance_tracker.py --limit 10
+
+# Update only tokens older than 24 hours
+python3 performance_tracker.py --min-age 24
+
+# Show summary without updates
+python3 performance_tracker.py --summary
+```
+
+**What it tracks:**
+- Current prices at 1h, 24h, 7d, and 30d intervals
+- Max gains and losses observed
+- Rug pull detection (liquidity drops or 99%+ crashes)
+- Token survival status
+
+**Automation**: See `PERFORMANCE_TRACKING.md` for cron/launchd setup to run automatically.
+
 ## Safety Score Calculation
 
 The safety score starts at 10.0 and deductions are made for risk factors:
@@ -157,13 +185,15 @@ python3 test_e2e.py
 
 ```
 sweetmemerep/
-├── analyzer.py          # Main CLI interface
-├── database.py          # SQLite database manager
-├── data_fetcher.py      # API data fetching
-├── requirements.txt     # Python dependencies
-├── test_e2e.py         # End-to-end tests
-├── README.md           # This file
-└── .gitignore          # Git ignore rules
+├── analyzer.py                # Main CLI interface
+├── database.py                # SQLite database manager
+├── data_fetcher.py            # API data fetching
+├── performance_tracker.py     # Automated performance tracking
+├── requirements.txt           # Python dependencies
+├── test_e2e.py               # End-to-end tests
+├── README.md                 # This file
+├── PERFORMANCE_TRACKING.md   # Performance tracking guide
+└── .gitignore                # Git ignore rules
 ```
 
 ## APIs Used
