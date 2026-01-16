@@ -27,8 +27,8 @@ else
 fi
 
 echo ""
-echo "This will set up HOURLY automatic performance tracking."
-echo "The tracker will run every hour in the background and update"
+echo "This will set up automatic performance tracking EVERY 15 MINUTES."
+echo "The tracker will run every 15 minutes in the background and update"
 echo "token prices, detect rug pulls, and refresh source statistics."
 echo ""
 read -p "Continue? (y/n) " -n 1 -r
@@ -62,7 +62,7 @@ if [[ "$OS" == "macos" ]]; then
         <string>$SCRIPT_DIR/performance_tracker.py</string>
     </array>
     <key>StartInterval</key>
-    <integer>3600</integer>
+    <integer>900</integer>
     <key>StandardOutPath</key>
     <string>$LOG_FILE</string>
     <key>StandardErrorPath</key>
@@ -83,7 +83,7 @@ EOF
     echo "✅ LaunchAgent installed and loaded!"
     echo ""
     echo "📋 Configuration:"
-    echo "   Runs every: 1 hour"
+    echo "   Runs every: 15 minutes"
     echo "   Log file: $LOG_FILE"
     echo "   Error log: $ERROR_LOG_FILE"
     echo ""
@@ -97,7 +97,7 @@ elif [[ "$OS" == "linux" ]]; then
     echo ""
     echo "Setting up cron job..."
 
-    CRON_CMD="0 * * * * cd $SCRIPT_DIR && $PYTHON_PATH performance_tracker.py >> $SCRIPT_DIR/performance_tracker.log 2>&1"
+    CRON_CMD="*/15 * * * * cd $SCRIPT_DIR && $PYTHON_PATH performance_tracker.py >> $SCRIPT_DIR/performance_tracker.log 2>&1"
 
     # Check if cron job already exists
     (crontab -l 2>/dev/null | grep -v "performance_tracker.py"; echo "$CRON_CMD") | crontab -
@@ -105,7 +105,7 @@ elif [[ "$OS" == "linux" ]]; then
     echo "✅ Cron job installed!"
     echo ""
     echo "📋 Configuration:"
-    echo "   Runs every: Hour (at minute 0)"
+    echo "   Runs every: 15 minutes"
     echo "   Command: $CRON_CMD"
     echo ""
     echo "🔧 Management commands:"
@@ -119,13 +119,13 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 echo "✅ SETUP COMPLETE!"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
-echo "🚀 The performance tracker will now run automatically every hour."
+echo "🚀 The performance tracker will now run automatically every 15 minutes."
 echo ""
 echo "📊 Next steps:"
 echo "   1. Analyze tokens using: python3 analyzer.py"
-echo "   2. Wait for hourly update (or run manually: python3 performance_tracker.py)"
+echo "   2. Wait for 15-min update (or run manually: python3 performance_tracker.py)"
 echo "   3. View updated source stats in analyzer.py option [2]"
 echo ""
-echo "💡 Tip: The first run happens in 1 hour, or run manually now to test:"
+echo "💡 Tip: The first run happens in 15 minutes, or run manually now to test:"
 echo "   python3 performance_tracker.py"
 echo ""

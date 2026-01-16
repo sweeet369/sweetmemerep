@@ -102,6 +102,52 @@ class MemecoinDatabase:
             self.conn.commit()
         except sqlite3.OperationalError:
             pass
+
+        # Migration: Add new columns to my_decisions
+        migrations_my_decisions = [
+            'ALTER TABLE my_decisions ADD COLUMN chart_assessment TEXT',
+            'ALTER TABLE my_decisions ADD COLUMN actual_exit_price REAL',
+            'ALTER TABLE my_decisions ADD COLUMN hold_duration_hours REAL'
+        ]
+        for migration in migrations_my_decisions:
+            try:
+                self.cursor.execute(migration)
+                self.conn.commit()
+            except sqlite3.OperationalError:
+                pass
+
+        # Migration: Add new columns to initial_snapshot
+        migrations_initial_snapshot = [
+            'ALTER TABLE initial_snapshot ADD COLUMN price_vs_atl_percent REAL',
+            'ALTER TABLE initial_snapshot ADD COLUMN buy_count_24h INTEGER',
+            'ALTER TABLE initial_snapshot ADD COLUMN sell_count_24h INTEGER',
+            'ALTER TABLE initial_snapshot ADD COLUMN price_change_5m REAL',
+            'ALTER TABLE initial_snapshot ADD COLUMN price_change_1h REAL',
+            'ALTER TABLE initial_snapshot ADD COLUMN price_change_24h REAL',
+            'ALTER TABLE initial_snapshot ADD COLUMN all_time_high REAL',
+            'ALTER TABLE initial_snapshot ADD COLUMN all_time_low REAL',
+            'ALTER TABLE initial_snapshot ADD COLUMN liquidity_locked_percent REAL'
+        ]
+        for migration in migrations_initial_snapshot:
+            try:
+                self.cursor.execute(migration)
+                self.conn.commit()
+            except sqlite3.OperationalError:
+                pass
+
+        # Migration: Add new columns to performance_tracking
+        migrations_performance_tracking = [
+            'ALTER TABLE performance_tracking ADD COLUMN checkpoint_type TEXT',
+            'ALTER TABLE performance_tracking ADD COLUMN max_price_since_entry REAL',
+            'ALTER TABLE performance_tracking ADD COLUMN min_price_since_entry REAL'
+        ]
+        for migration in migrations_performance_tracking:
+            try:
+                self.cursor.execute(migration)
+                self.conn.commit()
+            except sqlite3.OperationalError:
+                pass
+
         # Table 5: source_performance
         self.cursor.execute('''
             CREATE TABLE IF NOT EXISTS source_performance (
@@ -164,8 +210,11 @@ class MemecoinDatabase:
                 call_id, snapshot_timestamp, liquidity_usd, holder_count,
                 top_holder_percent, top_10_holders_percent, token_age_hours,
                 market_cap, volume_24h, price_usd, mint_authority_revoked,
-                freeze_authority_revoked, rugcheck_score, safety_score, raw_data
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                freeze_authority_revoked, rugcheck_score, safety_score, raw_data,
+                price_vs_atl_percent, buy_count_24h, sell_count_24h,
+                price_change_5m, price_change_1h, price_change_24h,
+                all_time_high, all_time_low, liquidity_locked_percent
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             call_id,
             timestamp,
@@ -181,26 +230,84 @@ class MemecoinDatabase:
             data.get('freeze_authority_revoked'),
             data.get('rugcheck_score'),
             data.get('safety_score'),
-            json.dumps(data.get('raw_data', {}))
+            json.dumps(data.get('raw_data', {})),
+            data.get('price_vs_atl_percent'),
+            data.get('buy_count_24h'),
+            data.get('sell_count_24h'),
+            data.get('price_change_5m'),
+            data.get('price_change_1h'),
+            data.get('price_change_24h'),
+            data.get('all_time_high'),
+            data.get('all_time_low'),
+            data.get('liquidity_locked_percent')
         ))
         self.conn.commit()
         return self.cursor.lastrowid
 
     def insert_decision(self, call_id: int, decision: str, trade_size_usd: Optional[float],
                        entry_price: Optional[float], reasoning_notes: str,
-                       emotional_state: str, confidence_level: int) -> int:
+                       emotional_state: str, confidence_level: int,
+                       chart_assessment: Optional[str] = None) -> int:
         """Insert user's trading decision."""
         timestamp = datetime.now().isoformat()
 
         self.cursor.execute('''
             INSERT INTO my_decisions (
                 call_id, timestamp_decision, my_decision, trade_size_usd,
-                entry_price, reasoning_notes, emotional_state, confidence_level
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                entry_price, reasoning_notes, emotional_state, confidence_level,
+                chart_assessment
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (call_id, timestamp, decision, trade_size_usd, entry_price,
-              reasoning_notes, emotional_state, confidence_level))
+              reasoning_notes, emotional_state, confidence_level, chart_assessment))
         self.conn.commit()
         return self.cursor.lastrowid
+
+    def record_exit(self, call_id: int, exit_price: float) -> bool:
+        """Record exit from a trade and calculate hold duration."""
+        # Get the decision entry timestamp
+        self.cursor.execute('''
+            SELECT timestamp_decision FROM my_decisions
+            WHERE call_id = ? AND my_decision = 'TRADE'
+        ''', (call_id,))
+
+        result = self.cursor.fetchone()
+        if not result:
+            return False
+
+        entry_time = datetime.fromisoformat(result['timestamp_decision'])
+        exit_time = datetime.now()
+        hold_duration = (exit_time - entry_time).total_seconds() / 3600  # hours
+
+        # Update the decision record with exit data
+        self.cursor.execute('''
+            UPDATE my_decisions SET
+                actual_exit_price = ?,
+                hold_duration_hours = ?
+            WHERE call_id = ? AND my_decision = 'TRADE'
+        ''', (exit_price, hold_duration, call_id))
+
+        self.conn.commit()
+        return True
+
+    def get_open_trades(self) -> List[Dict[str, Any]]:
+        """Get all open trades (TRADE decisions without exit recorded)."""
+        self.cursor.execute('''
+            SELECT
+                c.call_id,
+                c.token_symbol,
+                c.token_name,
+                c.contract_address,
+                d.entry_price,
+                d.trade_size_usd,
+                d.timestamp_decision,
+                d.chart_assessment,
+                d.reasoning_notes
+            FROM calls_received c
+            JOIN my_decisions d ON c.call_id = d.call_id
+            WHERE d.my_decision = 'TRADE' AND d.actual_exit_price IS NULL
+            ORDER BY d.timestamp_decision DESC
+        ''')
+        return [dict(row) for row in self.cursor.fetchall()]
 
     def insert_or_update_performance(self, call_id: int, data: Dict[str, Any]) -> int:
         """Insert or update performance tracking data."""
@@ -227,7 +334,10 @@ class MemecoinDatabase:
                     max_gain_observed = COALESCE(?, max_gain_observed),
                     max_loss_observed = COALESCE(?, max_loss_observed),
                     token_still_alive = COALESCE(?, token_still_alive),
-                    rug_pull_occurred = COALESCE(?, rug_pull_occurred)
+                    rug_pull_occurred = COALESCE(?, rug_pull_occurred),
+                    checkpoint_type = COALESCE(?, checkpoint_type),
+                    max_price_since_entry = COALESCE(?, max_price_since_entry),
+                    min_price_since_entry = COALESCE(?, min_price_since_entry)
                 WHERE call_id = ?
             ''', (
                 timestamp,
@@ -241,6 +351,9 @@ class MemecoinDatabase:
                 data.get('max_loss_observed'),
                 data.get('token_still_alive'),
                 data.get('rug_pull_occurred'),
+                data.get('checkpoint_type'),
+                data.get('max_price_since_entry'),
+                data.get('min_price_since_entry'),
                 call_id
             ))
             tracking_id = existing[0]
@@ -250,8 +363,9 @@ class MemecoinDatabase:
                 INSERT INTO performance_tracking (
                     call_id, last_updated, price_1h_later, price_24h_later,
                     price_7d_later, price_30d_later, current_mcap, current_liquidity,
-                    max_gain_observed, max_loss_observed, token_still_alive, rug_pull_occurred
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    max_gain_observed, max_loss_observed, token_still_alive, rug_pull_occurred,
+                    checkpoint_type, max_price_since_entry, min_price_since_entry
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 call_id, timestamp,
                 data.get('price_1h_later'),
@@ -263,7 +377,10 @@ class MemecoinDatabase:
                 data.get('max_gain_observed'),
                 data.get('max_loss_observed'),
                 data.get('token_still_alive'),
-                data.get('rug_pull_occurred')
+                data.get('rug_pull_occurred'),
+                data.get('checkpoint_type'),
+                data.get('max_price_since_entry'),
+                data.get('min_price_since_entry')
             ))
             tracking_id = self.cursor.lastrowid
 

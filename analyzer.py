@@ -31,7 +31,8 @@ class MemecoinAnalyzer:
         print("  [3] Watchlist performance")
         print("  [4] Manage tracked wallets")
         print("  [5] Add source to existing token")
-        print("  [6] Exit")
+        print("  [6] Record exit")
+        print("  [7] Exit")
         print()
 
     def get_safety_rating(self, score: float) -> tuple:
@@ -221,6 +222,33 @@ class MemecoinAnalyzer:
         if price:
             print(f"💵 Price: ${price:.10f}")
 
+        # Price changes
+        price_change_5m = data.get('price_change_5m')
+        price_change_1h = data.get('price_change_1h')
+        price_change_24h = data.get('price_change_24h')
+
+        if any([price_change_5m, price_change_1h, price_change_24h]):
+            print(f"\n📈 PRICE CHANGES:")
+            if price_change_5m is not None:
+                indicator = "📈" if price_change_5m > 0 else "📉" if price_change_5m < 0 else "➡️"
+                print(f"{indicator} 5m: {price_change_5m:+.2f}%")
+            if price_change_1h is not None:
+                indicator = "📈" if price_change_1h > 0 else "📉" if price_change_1h < 0 else "➡️"
+                print(f"{indicator} 1h: {price_change_1h:+.2f}%")
+            if price_change_24h is not None:
+                indicator = "📈" if price_change_24h > 0 else "📉" if price_change_24h < 0 else "➡️"
+                print(f"{indicator} 24h: {price_change_24h:+.2f}%")
+
+        # Buy/Sell activity
+        buy_count = data.get('buy_count_24h')
+        sell_count = data.get('sell_count_24h')
+        if buy_count is not None and sell_count is not None:
+            total_txns = buy_count + sell_count
+            buy_ratio = (buy_count / total_txns * 100) if total_txns > 0 else 0
+            print(f"\n💱 24H ACTIVITY:")
+            print(f"🟢 Buys: {buy_count} ({buy_ratio:.1f}%)")
+            print(f"🔴 Sells: {sell_count} ({100-buy_ratio:.1f}%)")
+
         # Red flags
         red_flags = data.get('red_flags', [])
         if red_flags:
@@ -250,6 +278,7 @@ class MemecoinAnalyzer:
         # Get additional details
         trade_size_usd = None
         entry_price = data.get('price_usd')
+        chart_assessment = None
 
         if decision == 'TRADE':
             try:
@@ -258,6 +287,17 @@ class MemecoinAnalyzer:
                     trade_size_usd = float(trade_size_input)
             except ValueError:
                 print("⚠️  Invalid amount, recording without position size")
+
+            # Chart assessment
+            chart_input = input("📊 Chart assessment? [S]trong / [N]eutral / [W]eak: ").strip().upper()
+            if chart_input in ['S', 'STRONG']:
+                chart_assessment = 'STRONG'
+            elif chart_input in ['N', 'NEUTRAL']:
+                chart_assessment = 'NEUTRAL'
+            elif chart_input in ['W', 'WEAK']:
+                chart_assessment = 'WEAK'
+            else:
+                chart_assessment = 'NEUTRAL'
 
         # Get notes
         reasoning_notes = input("📝 Notes: ").strip()
@@ -285,7 +325,8 @@ class MemecoinAnalyzer:
             entry_price=entry_price,
             reasoning_notes=reasoning_notes,
             emotional_state=emotional_state,
-            confidence_level=confidence_level
+            confidence_level=confidence_level,
+            chart_assessment=chart_assessment
         )
 
     def view_source_stats(self):
@@ -640,6 +681,75 @@ class MemecoinAnalyzer:
                 self.db.update_source_performance(src)
         print("✅ Source stats updated")
 
+    def record_exit_trade(self):
+        """Record exit from a trade."""
+        print("\n" + "━"*60)
+        print("💰 RECORD EXIT")
+        print("━"*60)
+
+        # Get open trades
+        open_trades = self.db.get_open_trades()
+
+        if not open_trades:
+            print("\n⚠️  No open trades to record exit for!")
+            return
+
+        # Display open trades
+        print(f"\n📋 Open trades ({len(open_trades)}):\n")
+        for i, trade in enumerate(open_trades, 1):
+            from datetime import datetime
+            entry_time = datetime.fromisoformat(trade['timestamp_decision'])
+            days_ago = (datetime.now() - entry_time).days
+            hours_ago = ((datetime.now() - entry_time).seconds // 3600) if days_ago == 0 else 0
+
+            print(f"[{i}] ${trade['token_symbol']} - {trade['token_name']}")
+            print(f"    Entry: ${trade['entry_price']:.10f}" if trade['entry_price'] else "    Entry: N/A")
+            print(f"    Size: ${trade['trade_size_usd']:,.2f}" if trade['trade_size_usd'] else "    Size: N/A")
+            if days_ago > 0:
+                print(f"    Held: {days_ago}d ago")
+            else:
+                print(f"    Held: {hours_ago}h ago")
+            if trade['chart_assessment']:
+                print(f"    Chart: {trade['chart_assessment']}")
+            print()
+
+        # Get user selection
+        try:
+            selection = int(input("Select trade number to record exit (or 0 to cancel): ").strip())
+            if selection == 0:
+                return
+            if selection < 1 or selection > len(open_trades):
+                print("❌ Invalid selection")
+                return
+        except ValueError:
+            print("❌ Invalid input")
+            return
+
+        selected_trade = open_trades[selection - 1]
+
+        # Get exit price
+        try:
+            exit_price_input = input(f"\n💵 Exit price (current entry: ${selected_trade['entry_price']:.10f}): ").strip()
+            exit_price = float(exit_price_input)
+        except ValueError:
+            print("❌ Invalid exit price")
+            return
+
+        # Record the exit
+        if self.db.record_exit(selected_trade['call_id'], exit_price):
+            entry_price = selected_trade['entry_price']
+            pnl_percent = ((exit_price - entry_price) / entry_price * 100) if entry_price else 0
+            pnl_indicator = "📈" if pnl_percent > 0 else "📉" if pnl_percent < 0 else "➡️"
+
+            print(f"\n✅ Exit recorded successfully!")
+            print(f"{pnl_indicator} P&L: {pnl_percent:+.2f}%")
+
+            if selected_trade['trade_size_usd']:
+                pnl_usd = selected_trade['trade_size_usd'] * (pnl_percent / 100)
+                print(f"💰 P&L (USD): ${pnl_usd:+,.2f}")
+        else:
+            print("❌ Failed to record exit")
+
     def run(self):
         """Main application loop."""
         self.print_header()
@@ -659,11 +769,13 @@ class MemecoinAnalyzer:
             elif choice == '5':
                 self.add_source_to_existing_token()
             elif choice == '6':
+                self.record_exit_trade()
+            elif choice == '7':
                 print("\n👋 Goodbye! Happy trading!")
                 self.db.close()
                 sys.exit(0)
             else:
-                print("⚠️  Invalid choice. Please enter 1, 2, 3, 4, 5, or 6.")
+                print("⚠️  Invalid choice. Please enter 1-7.")
 
 
 def main():

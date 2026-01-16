@@ -71,6 +71,7 @@ class PerformanceTracker:
                                 entry_price: float, snapshot_timestamp: str):
         """Update performance data for a single token."""
         hours_since = self.calculate_time_since_snapshot(snapshot_timestamp)
+        minutes_since = hours_since * 60
 
         # Fetch current price
         print(f"  Checking {contract_address}...")
@@ -105,12 +106,31 @@ class PerformanceTracker:
         )
         existing = self.db.cursor.fetchone()
 
+        # Determine checkpoint type based on time elapsed
+        checkpoint_type = None
+        if minutes_since >= 1440:  # 24 hours
+            checkpoint_type = '24h'
+        elif minutes_since >= 240:  # 4 hours
+            checkpoint_type = '4h'
+        elif minutes_since >= 60:  # 1 hour
+            checkpoint_type = '1h'
+        elif minutes_since >= 15:  # 15 minutes
+            checkpoint_type = '15m'
+
         # Prepare update data
         update_data = {
             'token_still_alive': 'yes',
             'current_mcap': current_mcap,
-            'current_liquidity': current_liquidity
+            'current_liquidity': current_liquidity,
+            'checkpoint_type': checkpoint_type
         }
+
+        # Track max and min prices since entry
+        if not existing or not existing['max_price_since_entry'] or current_price > existing['max_price_since_entry']:
+            update_data['max_price_since_entry'] = current_price
+
+        if not existing or not existing['min_price_since_entry'] or current_price < existing['min_price_since_entry']:
+            update_data['min_price_since_entry'] = current_price
 
         # Determine if this is a rug pull (liquidity dropped significantly or price near zero)
         if current_liquidity is not None and current_liquidity < 1000:
@@ -143,7 +163,7 @@ class PerformanceTracker:
 
         # Save to database
         self.db.insert_or_update_performance(call_id, update_data)
-        print(f"  ✅ Performance updated")
+        print(f"  ✅ Performance updated (checkpoint: {checkpoint_type})")
 
     def run_update(self, limit: int = None, min_age_hours: float = 0):
         """
@@ -192,9 +212,9 @@ class PerformanceTracker:
 
             sources_to_update.add(token['source'])
 
-            # Rate limiting to avoid API throttling
+            # Rate limiting to avoid API throttling (reduced for 15-min intervals)
             if i < len(tokens):
-                time.sleep(1.5)  # Wait 1.5 seconds between requests
+                time.sleep(1.0)  # Wait 1 second between requests
 
         # Update source performance stats
         print(f"\n📈 Updating source statistics...")

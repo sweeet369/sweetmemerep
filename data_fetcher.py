@@ -32,12 +32,24 @@ class MemecoinDataFetcher:
                 pairs = sorted(data['pairs'], key=lambda x: x.get('liquidity', {}).get('usd', 0), reverse=True)
                 main_pair = pairs[0]
 
+                # Extract price changes for different timeframes
+                price_change = main_pair.get('priceChange', {})
+
+                # Extract liquidity info
+                liquidity_info = main_pair.get('liquidity', {})
+                liquidity_usd = float(liquidity_info.get('usd', 0))
+
+                # Try to get ATH/ATL if available (not always present)
+                price_usd = float(main_pair.get('priceUsd', 0))
+
                 return {
-                    'price_usd': float(main_pair.get('priceUsd', 0)),
-                    'liquidity_usd': float(main_pair.get('liquidity', {}).get('usd', 0)),
+                    'price_usd': price_usd,
+                    'liquidity_usd': liquidity_usd,
                     'volume_24h': float(main_pair.get('volume', {}).get('h24', 0)),
                     'market_cap': float(main_pair.get('fdv', 0)),
-                    'price_change_24h': float(main_pair.get('priceChange', {}).get('h24', 0)),
+                    'price_change_5m': float(price_change.get('m5', 0)) if price_change.get('m5') else None,
+                    'price_change_1h': float(price_change.get('h1', 0)) if price_change.get('h1') else None,
+                    'price_change_24h': float(price_change.get('h24', 0)) if price_change.get('h24') else None,
                     'pair_created_at': main_pair.get('pairCreatedAt'),
                     'txns_24h_buys': main_pair.get('txns', {}).get('h24', {}).get('buys', 0),
                     'txns_24h_sells': main_pair.get('txns', {}).get('h24', {}).get('sells', 0),
@@ -252,6 +264,16 @@ class MemecoinDataFetcher:
                 'price_usd': dex_data['price_usd'],
                 'market_cap': dex_data['market_cap'],
                 'token_age_hours': self.calculate_token_age_hours(dex_data.get('pair_created_at')),
+                'price_change_5m': dex_data.get('price_change_5m'),
+                'price_change_1h': dex_data.get('price_change_1h'),
+                'price_change_24h': dex_data.get('price_change_24h'),
+                'buy_count_24h': dex_data.get('txns_24h_buys'),
+                'sell_count_24h': dex_data.get('txns_24h_sells'),
+                # ATH/ATL and liquidity locked data not available in basic API
+                'all_time_high': None,
+                'all_time_low': None,
+                'price_vs_atl_percent': None,
+                'liquidity_locked_percent': None,
             })
 
         # RugCheck data
