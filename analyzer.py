@@ -32,7 +32,8 @@ class MemecoinAnalyzer:
         print("  [4] Manage tracked wallets")
         print("  [5] Add source to existing token")
         print("  [6] Record exit")
-        print("  [7] Exit")
+        print("  [7] Remove from watchlist")
+        print("  [8] Exit")
         print()
 
     def get_safety_rating(self, score: float) -> tuple:
@@ -484,6 +485,69 @@ class MemecoinAnalyzer:
 
         print("─"*60)
         print(f"\n💡 Tip: Tokens showing strong gains may be good entry opportunities!")
+        print(f"💡 To remove from watchlist, use option [8] Remove from watchlist")
+
+    def remove_from_watchlist(self):
+        """Remove a token from the watchlist."""
+        print("\n" + "━"*60)
+        print("🗑️  REMOVE FROM WATCHLIST")
+        print("━"*60)
+
+        # Get watchlist tokens
+        self.db.cursor.execute('''
+            SELECT
+                c.call_id,
+                c.token_symbol,
+                c.token_name,
+                c.contract_address,
+                d.timestamp_decision
+            FROM calls_received c
+            JOIN my_decisions d ON c.call_id = d.call_id
+            WHERE d.my_decision = 'WATCH'
+            ORDER BY d.timestamp_decision DESC
+        ''')
+
+        watchlist = [dict(row) for row in self.db.cursor.fetchall()]
+
+        if not watchlist:
+            print("\n⚠️  Your watchlist is empty!")
+            return
+
+        # Display watchlist
+        print(f"\n📋 Watchlist ({len(watchlist)} tokens):\n")
+        for i, token in enumerate(watchlist, 1):
+            print(f"[{i}] ${token['token_symbol']} - {token['token_name']}")
+            print(f"    🔗 {token['contract_address'][:30]}...")
+
+        # Get user selection
+        try:
+            selection = int(input("\nSelect token number to remove (or 0 to cancel): ").strip())
+            if selection == 0:
+                return
+            if selection < 1 or selection > len(watchlist):
+                print("❌ Invalid selection")
+                return
+        except ValueError:
+            print("❌ Invalid input")
+            return
+
+        selected_token = watchlist[selection - 1]
+
+        # Confirm removal
+        confirm = input(f"\n⚠️  Remove ${selected_token['token_symbol']} from watchlist? [y/N]: ").strip().lower()
+        if confirm != 'y':
+            print("Cancelled.")
+            return
+
+        # Change decision from WATCH to PASS
+        self.db.cursor.execute('''
+            UPDATE my_decisions
+            SET my_decision = 'PASS'
+            WHERE call_id = ? AND my_decision = 'WATCH'
+        ''', (selected_token['call_id'],))
+        self.db.conn.commit()
+
+        print(f"\n✅ ${selected_token['token_symbol']} removed from watchlist")
 
     def manage_tracked_wallets(self):
         """Manage smart money tracked wallets."""
@@ -771,11 +835,13 @@ class MemecoinAnalyzer:
             elif choice == '6':
                 self.record_exit_trade()
             elif choice == '7':
+                self.remove_from_watchlist()
+            elif choice == '8':
                 print("\n👋 Goodbye! Happy trading!")
                 self.db.close()
                 sys.exit(0)
             else:
-                print("⚠️  Invalid choice. Please enter 1-7.")
+                print("⚠️  Invalid choice. Please enter 1-8.")
 
 
 def main():
