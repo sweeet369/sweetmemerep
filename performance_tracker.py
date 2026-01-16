@@ -210,15 +210,18 @@ class PerformanceTracker:
                 snapshot_timestamp=token['snapshot_timestamp']
             )
 
-            sources_to_update.add(token['source'])
+            # Split comma-separated sources and add each individually
+            source_list = [s.strip() for s in token['source'].split(',') if s.strip()]
+            for source in source_list:
+                sources_to_update.add(source)
 
             # Rate limiting to avoid API throttling (reduced for 15-min intervals)
             if i < len(tokens):
                 time.sleep(1.0)  # Wait 1 second between requests
 
-        # Update source performance stats
+        # Update source performance stats for each individual source
         print(f"\n📈 Updating source statistics...")
-        for source in sources_to_update:
+        for source in sorted(sources_to_update):
             self.db.update_source_performance(source)
             print(f"  ✅ Updated {source}")
 

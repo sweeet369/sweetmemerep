@@ -388,10 +388,15 @@ class MemecoinDatabase:
         return tracking_id
 
     def update_source_performance(self, source_name: str):
-        """Calculate and update source performance statistics."""
+        """Calculate and update source performance statistics for an individual source."""
         timestamp = datetime.now().isoformat()
 
-        # Get all calls from this source
+        # Clean up the source name (strip whitespace)
+        source_name = source_name.strip()
+
+        # Get all calls that include this source (handle comma-separated sources)
+        # Using LIKE with wildcards to match source in comma-separated lists
+        # Match patterns: "source", "source, ...", "..., source", "..., source, ..."
         self.cursor.execute('''
             SELECT
                 c.call_id,
@@ -402,13 +407,17 @@ class MemecoinDatabase:
             LEFT JOIN my_decisions d ON c.call_id = d.call_id
             LEFT JOIN performance_tracking p ON c.call_id = p.call_id
             WHERE c.source = ?
-        ''', (source_name,))
+               OR c.source LIKE ?
+               OR c.source LIKE ?
+               OR c.source LIKE ?
+        ''', (source_name, f'{source_name},%', f'%, {source_name}', f'%, {source_name},%'))
 
         calls = self.cursor.fetchall()
         total_calls = len(calls)
         calls_traded = sum(1 for c in calls if c['my_decision'] == 'TRADE')
 
-        gains = [c['max_gain_observed'] for c in calls if c['max_gain_observed'] is not None]
+        # Cap gains at -100% minimum (can't lose more than 100%)
+        gains = [max(c['max_gain_observed'], -100.0) for c in calls if c['max_gain_observed'] is not None]
         avg_max_gain = sum(gains) / len(gains) if gains else 0.0
 
         rugs = sum(1 for c in calls if c['rug_pull_occurred'] == 'yes')
@@ -443,6 +452,31 @@ class MemecoinDatabase:
         ''', (source_name, total_calls, calls_traded, win_rate, avg_max_gain, rug_rate, tier, timestamp))
 
         self.conn.commit()
+
+    def cleanup_combined_sources(self) -> int:
+        """
+        Remove combined source entries from source_performance table.
+        Returns number of entries removed.
+        """
+        # Get all source entries that contain commas (combined sources)
+        self.cursor.execute('''
+            SELECT source_name FROM source_performance
+            WHERE source_name LIKE '%,%'
+        ''')
+        combined_sources = [row['source_name'] for row in self.cursor.fetchall()]
+
+        if not combined_sources:
+            return 0
+
+        # Delete combined source entries
+        for source in combined_sources:
+            self.cursor.execute('''
+                DELETE FROM source_performance
+                WHERE source_name = ?
+            ''', (source,))
+
+        self.conn.commit()
+        return len(combined_sources)
 
     def get_all_sources(self) -> List[Dict[str, Any]]:
         """Get all source performance statistics."""
