@@ -335,9 +335,11 @@ class MemecoinAnalyzer:
                 s.snapshot_timestamp,
                 s.safety_score,
                 s.liquidity_usd as entry_liquidity,
+                s.market_cap as initial_mcap,
                 d.timestamp_decision,
                 d.reasoning_notes,
                 d.confidence_level,
+                p.current_mcap,
                 p.max_gain_observed,
                 p.max_loss_observed,
                 p.token_still_alive,
@@ -371,6 +373,16 @@ class MemecoinAnalyzer:
             rating, emoji = self.get_safety_rating(safety_score)
             print(f"    {emoji} Safety Score: {safety_score:.1f}/10 ({rating})")
             print(f"    💧 Entry Liquidity: {self.format_currency(token['entry_liquidity'])}")
+
+            # Market cap info
+            initial_mcap = token.get('initial_mcap')
+            current_mcap = token.get('current_mcap')
+            if initial_mcap:
+                print(f"    💰 Initial MCap: {self.format_currency(initial_mcap)}")
+            if current_mcap:
+                mcap_change = ((current_mcap - initial_mcap) / initial_mcap * 100) if initial_mcap else 0
+                mcap_indicator = "📈" if mcap_change > 0 else "📉" if mcap_change < 0 else "➡️"
+                print(f"    {mcap_indicator} Current MCap: {self.format_currency(current_mcap)} ({mcap_change:+.1f}%)")
 
             # Decision info
             from datetime import datetime

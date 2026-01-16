@@ -45,20 +45,21 @@ class PerformanceTracker:
         return delta.total_seconds() / 3600  # hours
 
     def fetch_current_price(self, address: str):
-        """Fetch current price for a token."""
+        """Fetch current price and market cap for a token."""
         try:
             data = self.fetcher.fetch_dexscreener_data(address)
             if data:
                 return {
                     'price': data.get('price_usd'),
                     'liquidity': data.get('liquidity_usd'),
+                    'market_cap': data.get('market_cap'),
                     'exists': True
                 }
             else:
-                return {'price': None, 'liquidity': None, 'exists': False}
+                return {'price': None, 'liquidity': None, 'market_cap': None, 'exists': False}
         except Exception as e:
             print(f"⚠️  Error fetching price: {e}")
-            return {'price': None, 'liquidity': None, 'exists': False}
+            return {'price': None, 'liquidity': None, 'market_cap': None, 'exists': False}
 
     def calculate_gain_loss(self, entry_price: float, current_price: float):
         """Calculate percentage gain/loss."""
@@ -85,6 +86,7 @@ class PerformanceTracker:
 
         current_price = current_data['price']
         current_liquidity = current_data['liquidity']
+        current_mcap = current_data['market_cap']
 
         if not current_price:
             print(f"  ⚠️  Could not get current price")
@@ -105,7 +107,8 @@ class PerformanceTracker:
 
         # Prepare update data
         update_data = {
-            'token_still_alive': 'yes'
+            'token_still_alive': 'yes',
+            'current_mcap': current_mcap
         }
 
         # Determine if this is a rug pull (liquidity dropped significantly or price near zero)
