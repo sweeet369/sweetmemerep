@@ -53,7 +53,8 @@ Options:
   [2] View source stats
   [3] Watchlist performance
   [4] Manage tracked wallets
-  [5] Exit
+  [5] Add source to existing token
+  [6] Exit
 ```
 
 ## Usage
@@ -62,10 +63,17 @@ Options:
 
 1. Select option `[1]` from the main menu
 2. Enter the contract address (e.g., `DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263`)
-3. Enter the source name (e.g., "Alpha Group #3")
+3. Enter source name(s) - supports multiple sources!
+   - Single source: `"Alpha Group #3"`
+   - Multiple sources: `"Discord Degen, Twitter Alpha, Wallet_ABC"`
 4. Select blockchain (Solana/BNB, default is Solana)
 5. Review the analysis results
 6. Record your decision (TRADE/PASS/WATCH)
+
+**Multi-Source Tracking:**
+- Track which combinations of sources give the best calls
+- Each source maintains independent performance stats
+- Perfect for comparing signal quality across groups
 
 ### Example Analysis Output
 
@@ -199,6 +207,44 @@ Create a JSON file with your wallet list:
 ```
 
 Then import: Select [4] → [4] Import from file
+
+### Adding Sources to Existing Tokens
+
+Select option `[5]` to add more sources to tokens you've already analyzed!
+
+**Use Case:**
+- Initially got a call from one source
+- Later see the same token called by other sources
+- Add all sources to track which combinations perform best
+
+**How it works:**
+```
+1. Select [5] Add source to existing token
+2. Enter contract address
+3. See current sources: "Discord Degen"
+4. Enter new sources: "Twitter Alpha, Telegram Signal"
+5. Result: "Discord Degen, Twitter Alpha, Telegram Signal"
+```
+
+**Benefits:**
+- Compare source quality (which sources call winners early?)
+- Track source combinations (do certain pairs work better together?)
+- No duplicate entries - automatically skips existing sources
+- Updates all source performance stats automatically
+
+**Example:**
+```bash
+python3 analyzer.py
+# Select [5] Add source to existing token
+
+Contract address: DezX...
+📋 Token: $BONK - Bonk
+📍 Current source(s): Alpha Group #3
+
+Enter additional source(s) to ADD: Twitter Whale, Smart Money Bot
+✅ Added 2 new source(s)
+📍 Updated source list: Alpha Group #3, Twitter Whale, Smart Money Bot
+```
 
 ## Performance Tracking
 

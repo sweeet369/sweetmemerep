@@ -30,7 +30,8 @@ class MemecoinAnalyzer:
         print("  [2] View source stats")
         print("  [3] Watchlist performance")
         print("  [4] Manage tracked wallets")
-        print("  [5] Exit")
+        print("  [5] Add source to existing token")
+        print("  [6] Exit")
         print()
 
     def get_safety_rating(self, score: float) -> tuple:
@@ -67,10 +68,14 @@ class MemecoinAnalyzer:
             print("❌ Contract address is required")
             return
 
-        # Get source
-        source = input("Source name (e.g., 'Alpha Group #3'): ").strip()
-        if not source:
+        # Get source(s) - allow comma-separated
+        source_input = input("Source name(s) - comma-separated for multiple (e.g., 'Alpha Group #3, Twitter Call'): ").strip()
+        if not source_input:
             source = "Unknown"
+        else:
+            # Clean up sources: split by comma, strip whitespace, remove empties
+            sources = [s.strip() for s in source_input.split(',') if s.strip()]
+            source = ', '.join(sources)  # Store as comma-separated string
 
         # Get blockchain
         blockchain = input("Blockchain [Solana/BNB] (default Solana): ").strip()
@@ -116,8 +121,10 @@ class MemecoinAnalyzer:
         # Get user decision
         self.get_user_decision(call_id, data)
 
-        # Update source performance
-        self.db.update_source_performance(source)
+        # Update source performance for all sources
+        sources = [s.strip() for s in source.split(',')]
+        for src in sources:
+            self.db.update_source_performance(src)
 
         print(f"\n✅ Saved to database (Call ID: {call_id})")
 
@@ -544,6 +551,74 @@ class MemecoinAnalyzer:
         except Exception as e:
             print(f"\n❌ Error importing wallets: {e}")
 
+    def add_source_to_existing_token(self):
+        """Add source(s) to an existing token."""
+        print("\n" + "━"*60)
+        print("➕ ADD SOURCE TO EXISTING TOKEN")
+        print("━"*60)
+
+        # Get contract address
+        contract_address = input("\nContract address: ").strip()
+        if not contract_address:
+            print("❌ Contract address is required")
+            return
+
+        # Check if token exists
+        call = self.db.get_call_by_address(contract_address)
+        if not call:
+            print(f"\n❌ Token not found in database: {contract_address}")
+            print("💡 Tip: Analyze the token first using option [1]")
+            return
+
+        # Display current info
+        print(f"\n📋 Token: ${call['token_symbol']} - {call['token_name']}")
+        print(f"📍 Current source(s): {call['source']}")
+
+        # Get new sources to add
+        new_sources_input = input("\nEnter additional source(s) to ADD (comma-separated): ").strip()
+        if not new_sources_input:
+            print("❌ No sources provided")
+            return
+
+        # Parse new sources
+        new_sources = [s.strip() for s in new_sources_input.split(',') if s.strip()]
+
+        # Get existing sources
+        existing_sources = [s.strip() for s in call['source'].split(',') if s.strip()]
+
+        # Merge (avoid duplicates)
+        all_sources = existing_sources.copy()
+        added_count = 0
+        for src in new_sources:
+            if src not in all_sources:
+                all_sources.append(src)
+                added_count += 1
+            else:
+                print(f"⚠️  Skipping duplicate: {src}")
+
+        if added_count == 0:
+            print("\n⚠️  No new sources to add (all were duplicates)")
+            return
+
+        # Update database
+        updated_source = ', '.join(all_sources)
+        self.db.cursor.execute('''
+            UPDATE calls_received
+            SET source = ?
+            WHERE contract_address = ?
+        ''', (updated_source, contract_address))
+        self.db.conn.commit()
+
+        print(f"\n✅ Added {added_count} new source(s)")
+        print(f"📍 Updated source list: {updated_source}")
+
+        # Update source performance for all new sources
+        print(f"\n🔄 Updating source performance stats...")
+        for src in new_sources:
+            if src in all_sources:
+                self.db.update_source_performance(src)
+        print("✅ Source stats updated")
+
     def run(self):
         """Main application loop."""
         self.print_header()
@@ -561,11 +636,13 @@ class MemecoinAnalyzer:
             elif choice == '4':
                 self.manage_tracked_wallets()
             elif choice == '5':
+                self.add_source_to_existing_token()
+            elif choice == '6':
                 print("\n👋 Goodbye! Happy trading!")
                 self.db.close()
                 sys.exit(0)
             else:
-                print("⚠️  Invalid choice. Please enter 1, 2, 3, 4, or 5.")
+                print("⚠️  Invalid choice. Please enter 1, 2, 3, 4, 5, or 6.")
 
 
 def main():
