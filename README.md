@@ -6,6 +6,7 @@ A comprehensive CLI tool for analyzing memecoin trading opportunities on Solana 
 
 - **Real-time Analysis**: Fetch live data from DexScreener and RugCheck APIs
 - **Safety Scoring**: Automated safety score (0-10) based on multiple risk factors
+- **Smart Money Tracking**: Track profitable wallets and detect when they're holding analyzed tokens
 - **Red Flag Detection**: Automatic detection of critical risks (low liquidity, mint authority, whale concentration)
 - **Decision Tracking**: Record your trading decisions with notes and emotional state
 - **Watchlist Monitoring**: Track tokens marked as "WATCH" and monitor their performance before entering
@@ -51,7 +52,8 @@ Options:
   [1] Analyze new call
   [2] View source stats
   [3] Watchlist performance
-  [4] Exit
+  [4] Manage tracked wallets
+  [5] Exit
 ```
 
 ## Usage
@@ -150,6 +152,53 @@ Select option `[3]` to see all tokens you marked as "WATCH" and their current pe
 - Monitor multiple opportunities simultaneously
 - Automatic rug pull detection
 - See performance trends over time
+
+### Smart Money Tracking
+
+Select option `[4]` to manage smart money wallets - track profitable traders and get alerted when they're holding tokens you analyze!
+
+**Features:**
+- Add wallet addresses with nicknames
+- Track performance stats (win rate, average gains, total buys)
+- Auto-tier wallets (S/A/B/C) based on performance
+- Automatic detection when tracked wallets hold analyzed tokens
+- Safety score bonus when smart money is detected
+
+**Example Detection:**
+```
+💰 SMART MONEY DETECTED:
+🟢 Wallet: Elite Trader 1 (S-Tier, 78% win rate, avg +450%)
+🟢 Wallet: Degen King (A-Tier, 65% win rate, avg +280%)
+✨ Safety score bonus: +1.0 points
+```
+
+**How it works:**
+1. Add profitable wallet addresses you want to track
+2. Update their performance stats (win rate, avg gains)
+3. When analyzing tokens, system checks if tracked wallets are top holders
+4. Alerts you when smart money is detected
+5. Adds bonus points to safety score (1-2 wallets: +1.0, 3+ wallets: +2.0)
+
+**Quick Start:**
+```bash
+# Run demo setup (creates 3 example wallets)
+python3 test_smart_money.py
+
+# Or manually add wallets
+python3 analyzer.py
+# Select [4] Manage tracked wallets → [1] Add wallet
+```
+
+**Import from JSON:**
+Create a JSON file with your wallet list:
+```json
+[
+  {"address": "7xKXtg2...", "name": "Elite Trader", "notes": "Consistently profitable"},
+  {"address": "GrWRS3Y...", "name": "Whale Watcher", "notes": "Follows big players"}
+]
+```
+
+Then import: Select [4] → [4] Import from file
 
 ## Performance Tracking
 

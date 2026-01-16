@@ -103,6 +103,21 @@ class MemecoinDatabase:
             )
         ''')
 
+        # Table 6: tracked_wallets
+        self.cursor.execute('''
+            CREATE TABLE IF NOT EXISTS tracked_wallets (
+                wallet_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                wallet_address TEXT UNIQUE NOT NULL,
+                wallet_name TEXT NOT NULL,
+                total_tracked_buys INTEGER DEFAULT 0,
+                win_rate REAL DEFAULT 0.0,
+                avg_gain REAL DEFAULT 0.0,
+                tier TEXT DEFAULT 'C',
+                notes TEXT,
+                date_added TEXT NOT NULL
+            )
+        ''')
+
         self.conn.commit()
 
     def insert_call(self, contract_address: str, token_symbol: str, token_name: str,
@@ -308,6 +323,86 @@ class MemecoinDatabase:
         )
         row = self.cursor.fetchone()
         return dict(row) if row else None
+
+    # Tracked Wallets Methods
+
+    def insert_wallet(self, wallet_address: str, wallet_name: str, notes: str = "") -> int:
+        """Insert a new tracked wallet."""
+        timestamp = datetime.now().isoformat()
+
+        try:
+            self.cursor.execute('''
+                INSERT INTO tracked_wallets
+                (wallet_address, wallet_name, notes, date_added)
+                VALUES (?, ?, ?, ?)
+            ''', (wallet_address, wallet_name, notes, timestamp))
+            self.conn.commit()
+            return self.cursor.lastrowid
+        except sqlite3.IntegrityError:
+            # Wallet already exists
+            return -1
+
+    def remove_wallet(self, wallet_address: str) -> bool:
+        """Remove a tracked wallet."""
+        self.cursor.execute(
+            'DELETE FROM tracked_wallets WHERE wallet_address = ?',
+            (wallet_address,)
+        )
+        self.conn.commit()
+        return self.cursor.rowcount > 0
+
+    def get_all_wallets(self) -> List[Dict[str, Any]]:
+        """Get all tracked wallets."""
+        self.cursor.execute('''
+            SELECT * FROM tracked_wallets
+            ORDER BY tier ASC, avg_gain DESC
+        ''')
+        return [dict(row) for row in self.cursor.fetchall()]
+
+    def get_wallet_by_address(self, wallet_address: str) -> Optional[Dict[str, Any]]:
+        """Get a specific tracked wallet."""
+        self.cursor.execute(
+            'SELECT * FROM tracked_wallets WHERE wallet_address = ?',
+            (wallet_address,)
+        )
+        row = self.cursor.fetchone()
+        return dict(row) if row else None
+
+    def update_wallet_performance(self, wallet_address: str, win_rate: float,
+                                  avg_gain: float, total_buys: int):
+        """Update wallet performance stats and calculate tier."""
+        # Calculate tier based on performance
+        if win_rate > 0.7 and avg_gain > 400:
+            tier = 'S'
+        elif win_rate > 0.6 and avg_gain > 250:
+            tier = 'A'
+        elif win_rate > 0.5 and avg_gain > 100:
+            tier = 'B'
+        else:
+            tier = 'C'
+
+        self.cursor.execute('''
+            UPDATE tracked_wallets SET
+                win_rate = ?,
+                avg_gain = ?,
+                total_tracked_buys = ?,
+                tier = ?
+            WHERE wallet_address = ?
+        ''', (win_rate, avg_gain, total_buys, tier, wallet_address))
+        self.conn.commit()
+
+    def import_wallets_from_list(self, wallets: List[Dict[str, str]]) -> int:
+        """Import multiple wallets from a list."""
+        count = 0
+        for wallet in wallets:
+            wallet_id = self.insert_wallet(
+                wallet_address=wallet.get('address', ''),
+                wallet_name=wallet.get('name', ''),
+                notes=wallet.get('notes', '')
+            )
+            if wallet_id > 0:
+                count += 1
+        return count
 
     def close(self):
         """Close database connection."""

@@ -29,7 +29,8 @@ class MemecoinAnalyzer:
         print("  [1] Analyze new call")
         print("  [2] View source stats")
         print("  [3] Watchlist performance")
-        print("  [4] Exit")
+        print("  [4] Manage tracked wallets")
+        print("  [5] Exit")
         print()
 
     def get_safety_rating(self, score: float) -> tuple:
@@ -79,8 +80,11 @@ class MemecoinAnalyzer:
         print(f"\n⏳ Fetching data for {contract_address}...")
         print("━"*60)
 
-        # Fetch data
-        data = self.fetcher.fetch_all_data(contract_address)
+        # Get tracked wallets for smart money detection
+        tracked_wallets = self.db.get_all_wallets()
+
+        # Fetch data (with smart money detection)
+        data = self.fetcher.fetch_all_data(contract_address, tracked_wallets=tracked_wallets)
 
         if not data:
             print("\n❌ Failed to fetch token data. Token may not exist or APIs are unavailable.")
@@ -161,6 +165,26 @@ class MemecoinAnalyzer:
                 print(f"✅ Top Holder: {top_holder:.1f}% (acceptable)")
         else:
             print("⚠️  Top Holder: N/A")
+
+        # Smart money detection
+        smart_money_wallets = data.get('smart_money_wallets', [])
+        if smart_money_wallets:
+            print(f"\n💰 SMART MONEY DETECTED:")
+            for wallet in smart_money_wallets:
+                tier = wallet['tier']
+                tier_emoji = {'S': '🟢', 'A': '🟢', 'B': '🟡', 'C': '🟠'}.get(tier, '⚪')
+                win_rate_pct = wallet['win_rate'] * 100
+                avg_gain_pct = wallet['avg_gain']
+                print(f"{tier_emoji} Wallet: {wallet['wallet_name']} ({tier}-Tier, {win_rate_pct:.0f}% win rate, avg +{avg_gain_pct:.0f}%)")
+
+            if len(smart_money_wallets) > 2:
+                others = len(smart_money_wallets) - 2
+                if others > 0:
+                    print(f"🟡 +{others} other profitable wallet(s) holding")
+
+            smart_bonus = data.get('smart_money_bonus', 0)
+            if smart_bonus > 0:
+                print(f"✨ Safety score bonus: +{smart_money_bonus:.1f} points")
 
         # Market data
         print(f"\n📊 MARKET DATA:")
@@ -392,6 +416,134 @@ class MemecoinAnalyzer:
         print("─"*60)
         print(f"\n💡 Tip: Tokens showing strong gains may be good entry opportunities!")
 
+    def manage_tracked_wallets(self):
+        """Manage smart money tracked wallets."""
+        while True:
+            print("\n" + "━"*60)
+            print("💰 TRACKED WALLETS MANAGEMENT")
+            print("━"*60)
+            print("\nOptions:")
+            print("  [1] Add wallet")
+            print("  [2] Remove wallet")
+            print("  [3] View all wallets")
+            print("  [4] Import from file")
+            print("  [5] Back to main menu")
+            print()
+
+            choice = input("Your choice: ").strip()
+
+            if choice == '1':
+                self.add_wallet()
+            elif choice == '2':
+                self.remove_wallet()
+            elif choice == '3':
+                self.view_all_wallets()
+            elif choice == '4':
+                self.import_wallets()
+            elif choice == '5':
+                break
+            else:
+                print("⚠️  Invalid choice. Please enter 1-5.")
+
+    def add_wallet(self):
+        """Add a new tracked wallet."""
+        print("\n" + "─"*60)
+        print("➕ ADD TRACKED WALLET")
+        print("─"*60)
+
+        wallet_address = input("\nWallet address: ").strip()
+        if not wallet_address:
+            print("❌ Wallet address is required")
+            return
+
+        wallet_name = input("Wallet name/nickname: ").strip()
+        if not wallet_name:
+            wallet_name = wallet_address[:8]
+
+        notes = input("Notes (optional): ").strip()
+
+        wallet_id = self.db.insert_wallet(wallet_address, wallet_name, notes)
+
+        if wallet_id > 0:
+            print(f"\n✅ Wallet '{wallet_name}' added successfully!")
+        else:
+            print(f"\n⚠️  Wallet already exists in database")
+
+    def remove_wallet(self):
+        """Remove a tracked wallet."""
+        print("\n" + "─"*60)
+        print("❌ REMOVE TRACKED WALLET")
+        print("─"*60)
+
+        wallet_address = input("\nWallet address to remove: ").strip()
+        if not wallet_address:
+            print("❌ Wallet address is required")
+            return
+
+        if self.db.remove_wallet(wallet_address):
+            print(f"\n✅ Wallet removed successfully!")
+        else:
+            print(f"\n⚠️  Wallet not found in database")
+
+    def view_all_wallets(self):
+        """View all tracked wallets."""
+        print("\n" + "━"*60)
+        print("💰 TRACKED SMART MONEY WALLETS")
+        print("━"*60)
+
+        wallets = self.db.get_all_wallets()
+
+        if not wallets:
+            print("\n⚠️  No tracked wallets yet. Add some to start detecting smart money!")
+            return
+
+        print(f"\n📋 Tracking {len(wallets)} wallet(s)\n")
+        print(f"{'Tier':<6} {'Name':<20} {'Win Rate':<12} {'Avg Gain':<12} {'Total Buys':<12}")
+        print("─"*70)
+
+        for wallet in wallets:
+            tier = wallet['tier']
+            tier_emoji = {'S': '🏆', 'A': '🥇', 'B': '🥈', 'C': '🥉'}.get(tier, '📊')
+            name = wallet['wallet_name'][:19]
+            win_rate = wallet['win_rate'] * 100
+            avg_gain = wallet['avg_gain']
+            total_buys = wallet['total_tracked_buys']
+
+            print(f"{tier_emoji} {tier:<4} {name:<20} {win_rate:>6.1f}% {avg_gain:>10.0f}% {total_buys:>10}")
+
+        print("\n💡 Tip: Update wallet performance manually using database methods")
+
+    def import_wallets(self):
+        """Import wallets from a JSON file."""
+        print("\n" + "─"*60)
+        print("📥 IMPORT WALLETS FROM FILE")
+        print("─"*60)
+
+        file_path = input("\nFile path (JSON format): ").strip()
+        if not file_path:
+            print("❌ File path is required")
+            return
+
+        try:
+            import json
+            with open(file_path, 'r') as f:
+                wallets = json.load(f)
+
+            count = self.db.import_wallets_from_list(wallets)
+            print(f"\n✅ Successfully imported {count} wallet(s)")
+            print("\nExpected JSON format:")
+            print('[')
+            print('  {"address": "wallet_address_here", "name": "Wallet Name", "notes": "Optional notes"},')
+            print('  {"address": "another_address", "name": "Another Wallet"}')
+            print(']')
+
+        except FileNotFoundError:
+            print(f"\n❌ File not found: {file_path}")
+        except json.JSONDecodeError:
+            print(f"\n❌ Invalid JSON format in file")
+        except Exception as e:
+            print(f"\n❌ Error importing wallets: {e}")
+
     def run(self):
         """Main application loop."""
         self.print_header()
@@ -407,11 +559,13 @@ class MemecoinAnalyzer:
             elif choice == '3':
                 self.view_watchlist()
             elif choice == '4':
+                self.manage_tracked_wallets()
+            elif choice == '5':
                 print("\n👋 Goodbye! Happy trading!")
                 self.db.close()
                 sys.exit(0)
             else:
-                print("⚠️  Invalid choice. Please enter 1, 2, 3, or 4.")
+                print("⚠️  Invalid choice. Please enter 1, 2, 3, 4, or 5.")
 
 
 def main():

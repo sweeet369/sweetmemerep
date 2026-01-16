@@ -193,7 +193,43 @@ class MemecoinDataFetcher:
         # Ensure score is between 0 and 10
         return max(0.0, min(10.0, score))
 
-    def fetch_all_data(self, address: str) -> Optional[Dict[str, Any]]:
+    def check_smart_money_wallets(self, top_holders: List[Dict], tracked_wallets: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Cross-reference top holders with tracked smart money wallets.
+
+        Args:
+            top_holders: List of top holder dicts from RugCheck (with 'address' and 'pct' keys)
+            tracked_wallets: List of tracked wallet dicts from database
+
+        Returns:
+            List of matched wallets with their performance stats
+        """
+        matches = []
+
+        if not top_holders or not tracked_wallets:
+            return matches
+
+        # Create a map of tracked wallet addresses for fast lookup
+        tracked_map = {w['wallet_address'].lower(): w for w in tracked_wallets}
+
+        # Check each top holder
+        for holder in top_holders:
+            holder_address = holder.get('address', '').lower()
+            if holder_address in tracked_map:
+                wallet_info = tracked_map[holder_address]
+                matches.append({
+                    'wallet_address': wallet_info['wallet_address'],
+                    'wallet_name': wallet_info['wallet_name'],
+                    'tier': wallet_info['tier'],
+                    'win_rate': wallet_info['win_rate'],
+                    'avg_gain': wallet_info['avg_gain'],
+                    'total_buys': wallet_info['total_tracked_buys'],
+                    'holding_percent': holder.get('pct', 0)
+                })
+
+        return matches
+
+    def fetch_all_data(self, address: str, tracked_wallets: List[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
         """Fetch and combine data from all sources."""
         print(f"🔍 Fetching DexScreener data...")
         dex_data = self.fetch_dexscreener_data(address)
@@ -239,8 +275,29 @@ class MemecoinDataFetcher:
                 'rugcheck_score': None,
             })
 
-        # Calculate safety score
-        combined_data['safety_score'] = self.calculate_safety_score(combined_data)
+        # Check for smart money wallets
+        smart_money_wallets = []
+        smart_money_bonus = 0
+        if tracked_wallets and rug_data and rug_data.get('raw_data', {}).get('topHolders'):
+            top_holders = rug_data['raw_data'].get('topHolders', [])
+            smart_money_wallets = self.check_smart_money_wallets(top_holders, tracked_wallets)
+
+            # Calculate smart money bonus for safety score
+            wallet_count = len(smart_money_wallets)
+            if wallet_count >= 3:
+                smart_money_bonus = 2.0  # 20 points converted to 2.0 on 0-10 scale
+            elif wallet_count >= 1:
+                smart_money_bonus = 1.0  # 10 points converted to 1.0 on 0-10 scale
+
+        combined_data['smart_money_wallets'] = smart_money_wallets
+        combined_data['smart_money_count'] = len(smart_money_wallets)
+
+        # Calculate safety score (base score)
+        base_safety_score = self.calculate_safety_score(combined_data)
+
+        # Add smart money bonus (capped at 10.0)
+        combined_data['safety_score'] = min(10.0, base_safety_score + smart_money_bonus)
+        combined_data['smart_money_bonus'] = smart_money_bonus
 
         # Detect red flags
         combined_data['red_flags'] = self.detect_red_flags(combined_data)
