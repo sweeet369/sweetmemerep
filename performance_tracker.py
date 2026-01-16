@@ -153,13 +153,16 @@ class PerformanceTracker:
         if hours_since >= 720 and (not existing or not existing['price_30d_later']):  # 30 days
             update_data['price_30d_later'] = current_price
 
-        # Update max gain/loss observed
+        # Update max gain/loss observed (cap at -100% minimum)
         if gain_loss is not None:
-            if not existing or not existing['max_gain_observed'] or gain_loss > existing['max_gain_observed']:
-                update_data['max_gain_observed'] = gain_loss
+            # Cap gain_loss at -100% (can't lose more than 100%)
+            capped_gain_loss = max(gain_loss, -100.0)
 
-            if not existing or not existing['max_loss_observed'] or gain_loss < existing['max_loss_observed']:
-                update_data['max_loss_observed'] = gain_loss
+            if not existing or not existing['max_gain_observed'] or capped_gain_loss > existing['max_gain_observed']:
+                update_data['max_gain_observed'] = capped_gain_loss
+
+            if not existing or not existing['max_loss_observed'] or capped_gain_loss < existing['max_loss_observed']:
+                update_data['max_loss_observed'] = capped_gain_loss
 
         # Save to database
         self.db.insert_or_update_performance(call_id, update_data)
