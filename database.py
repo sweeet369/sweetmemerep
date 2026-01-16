@@ -81,6 +81,7 @@ class MemecoinDatabase:
                 price_7d_later REAL,
                 price_30d_later REAL,
                 current_mcap REAL,
+                current_liquidity REAL,
                 max_gain_observed REAL,
                 max_loss_observed REAL,
                 token_still_alive TEXT,
@@ -89,12 +90,17 @@ class MemecoinDatabase:
             )
         ''')
 
-        # Add current_mcap column if it doesn't exist (for existing databases)
+        # Add columns if they don't exist (for existing databases)
         try:
             self.cursor.execute('ALTER TABLE performance_tracking ADD COLUMN current_mcap REAL')
             self.conn.commit()
         except sqlite3.OperationalError:
-            # Column already exists
+            pass
+
+        try:
+            self.cursor.execute('ALTER TABLE performance_tracking ADD COLUMN current_liquidity REAL')
+            self.conn.commit()
+        except sqlite3.OperationalError:
             pass
         # Table 5: source_performance
         self.cursor.execute('''
@@ -217,6 +223,7 @@ class MemecoinDatabase:
                     price_7d_later = COALESCE(?, price_7d_later),
                     price_30d_later = COALESCE(?, price_30d_later),
                     current_mcap = ?,
+                    current_liquidity = ?,
                     max_gain_observed = COALESCE(?, max_gain_observed),
                     max_loss_observed = COALESCE(?, max_loss_observed),
                     token_still_alive = COALESCE(?, token_still_alive),
@@ -229,6 +236,7 @@ class MemecoinDatabase:
                 data.get('price_7d_later'),
                 data.get('price_30d_later'),
                 data.get('current_mcap'),
+                data.get('current_liquidity'),
                 data.get('max_gain_observed'),
                 data.get('max_loss_observed'),
                 data.get('token_still_alive'),
@@ -241,9 +249,9 @@ class MemecoinDatabase:
             self.cursor.execute('''
                 INSERT INTO performance_tracking (
                     call_id, last_updated, price_1h_later, price_24h_later,
-                    price_7d_later, price_30d_later, current_mcap, max_gain_observed,
-                    max_loss_observed, token_still_alive, rug_pull_occurred
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    price_7d_later, price_30d_later, current_mcap, current_liquidity,
+                    max_gain_observed, max_loss_observed, token_still_alive, rug_pull_occurred
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 call_id, timestamp,
                 data.get('price_1h_later'),
@@ -251,6 +259,7 @@ class MemecoinDatabase:
                 data.get('price_7d_later'),
                 data.get('price_30d_later'),
                 data.get('current_mcap'),
+                data.get('current_liquidity'),
                 data.get('max_gain_observed'),
                 data.get('max_loss_observed'),
                 data.get('token_still_alive'),

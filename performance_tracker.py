@@ -108,7 +108,8 @@ class PerformanceTracker:
         # Prepare update data
         update_data = {
             'token_still_alive': 'yes',
-            'current_mcap': current_mcap
+            'current_mcap': current_mcap,
+            'current_liquidity': current_liquidity
         }
 
         # Determine if this is a rug pull (liquidity dropped significantly or price near zero)

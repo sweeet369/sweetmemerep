@@ -340,6 +340,7 @@ class MemecoinAnalyzer:
                 d.reasoning_notes,
                 d.confidence_level,
                 p.current_mcap,
+                p.current_liquidity,
                 p.max_gain_observed,
                 p.max_loss_observed,
                 p.token_still_alive,
@@ -383,6 +384,14 @@ class MemecoinAnalyzer:
                 mcap_change = ((current_mcap - initial_mcap) / initial_mcap * 100) if initial_mcap else 0
                 mcap_indicator = "📈" if mcap_change > 0 else "📉" if mcap_change < 0 else "➡️"
                 print(f"    {mcap_indicator} Current MCap: {self.format_currency(current_mcap)} ({mcap_change:+.1f}%)")
+
+            # Liquidity tracking
+            entry_liquidity = token.get('entry_liquidity')
+            current_liquidity = token.get('current_liquidity')
+            if current_liquidity and entry_liquidity:
+                liq_change = ((current_liquidity - entry_liquidity) / entry_liquidity * 100) if entry_liquidity else 0
+                liq_indicator = "📈" if liq_change > 0 else "📉" if liq_change < 0 else "➡️"
+                print(f"    {liq_indicator} Current Liquidity: {self.format_currency(current_liquidity)} ({liq_change:+.1f}%)")
 
             # Decision info
             from datetime import datetime
