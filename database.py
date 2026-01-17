@@ -7,7 +7,7 @@ from typing import Optional, Dict, Any, List
 class MemecoinDatabase:
     """SQLite database manager for memecoin trading analyzer."""
 
-    def __init__(self, db_path: str = "memecoin_analyzer.db"):
+    def __init__(self, db_path: str = "/Users/shecksaad/Desktop/sweetmemerep/memecoin_analyzer.db"):
         """Initialize database connection and create tables if needed."""
         self.db_path = db_path
         self.conn = sqlite3.connect(db_path)

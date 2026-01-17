@@ -351,7 +351,7 @@ class MemecoinAnalyzer:
             total = source['total_calls']
             traded = source['calls_traded']
             win_rate = source['win_rate'] * 100
-            avg_gain = source['avg_max_gain'] * 100
+            avg_gain = source['avg_max_gain']
             rug_rate = source['rug_rate'] * 100
 
             # Add tier emoji
