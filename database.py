@@ -4,6 +4,10 @@ from datetime import datetime
 from typing import Optional, Dict, Any, List
 
 
+# Constants for source performance calculations
+HIT_THRESHOLD = 50.0  # Minimum gain % to count as hit
+
+
 class MemecoinDatabase:
     """SQLite database manager for memecoin trading analyzer."""
 
@@ -427,6 +431,10 @@ class MemecoinDatabase:
         wins = sum(1 for c in calls if c['max_gain_observed'] and c['max_gain_observed'] > 0)
         win_rate = wins / calls_traded if calls_traded > 0 else 0.0
 
+        # Calculate hit rate (% of calls that reached +50% at any point)
+        hits = sum(1 for c in calls if c['max_gain_observed'] and c['max_gain_observed'] >= HIT_THRESHOLD)
+        hit_rate = hits / total_calls if total_calls > 0 else 0.0
+
         # Determine tier
         if avg_max_gain > 5.0 and win_rate > 0.6 and rug_rate < 0.1:
             tier = 'S'
@@ -440,17 +448,18 @@ class MemecoinDatabase:
         # Insert or update
         self.cursor.execute('''
             INSERT INTO source_performance
-            (source_name, total_calls, calls_traded, win_rate, avg_max_gain, rug_rate, tier, last_updated)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            (source_name, total_calls, calls_traded, win_rate, avg_max_gain, rug_rate, hit_rate, tier, last_updated)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(source_name) DO UPDATE SET
                 total_calls = excluded.total_calls,
                 calls_traded = excluded.calls_traded,
                 win_rate = excluded.win_rate,
                 avg_max_gain = excluded.avg_max_gain,
                 rug_rate = excluded.rug_rate,
+                hit_rate = excluded.hit_rate,
                 tier = excluded.tier,
                 last_updated = excluded.last_updated
-        ''', (source_name, total_calls, calls_traded, win_rate, avg_max_gain, rug_rate, tier, timestamp))
+        ''', (source_name, total_calls, calls_traded, win_rate, avg_max_gain, rug_rate, hit_rate, tier, timestamp))
 
         self.conn.commit()
 

@@ -342,8 +342,8 @@ class MemecoinAnalyzer:
             print("\n⚠️  No source data available yet. Analyze some calls first!")
             return
 
-        print(f"\n{'Tier':<6} {'Source':<25} {'Calls':<8} {'Traded':<8} {'Win%':<8} {'Avg Gain':<12} {'Rug%':<8}")
-        print("─"*85)
+        print(f"\n{'Tier':<6} {'Source':<25} {'Calls':<8} {'Traded':<8} {'Win%':<8} {'Hit%':<8} {'Avg Gain':<12} {'Rug%':<8}")
+        print("─"*95)
 
         for source in sources:
             tier = source['tier']
@@ -351,13 +351,14 @@ class MemecoinAnalyzer:
             total = source['total_calls']
             traded = source['calls_traded']
             win_rate = source['win_rate'] * 100
+            hit_rate = source.get('hit_rate', 0.0) * 100  # Get hit_rate, default to 0
             avg_gain = source['avg_max_gain']
             rug_rate = source['rug_rate'] * 100
 
             # Add tier emoji
             tier_emoji = {'S': '🏆', 'A': '🥇', 'B': '🥈', 'C': '🥉'}.get(tier, '📊')
 
-            print(f"{tier_emoji} {tier:<4} {name:<25} {total:<8} {traded:<8} {win_rate:>6.1f}% {avg_gain:>10.1f}% {rug_rate:>6.1f}%")
+            print(f"{tier_emoji} {tier:<4} {name:<25} {total:<8} {traded:<8} {win_rate:>6.1f}% {hit_rate:>6.1f}% {avg_gain:>10.1f}% {rug_rate:>6.1f}%")
 
     def view_watchlist(self):
         """Display performance of all tokens in watchlist."""
