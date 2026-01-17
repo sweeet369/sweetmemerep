@@ -416,8 +416,9 @@ class MemecoinDatabase:
         total_calls = len(calls)
         calls_traded = sum(1 for c in calls if c['my_decision'] == 'TRADE')
 
-        # Cap gains at -100% minimum (can't lose more than 100%)
-        gains = [max(c['max_gain_observed'], -100.0) for c in calls if c['max_gain_observed'] is not None]
+        # Calculate average gain for tokens that actually pumped (max_gain > 0)
+        # Exclude tokens that only went down - they don't contribute to "Avg Gain"
+        gains = [c['max_gain_observed'] for c in calls if c['max_gain_observed'] is not None and c['max_gain_observed'] > 0]
         avg_max_gain = sum(gains) / len(gains) if gains else 0.0
 
         rugs = sum(1 for c in calls if c['rug_pull_occurred'] == 'yes')
