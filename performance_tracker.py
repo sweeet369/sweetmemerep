@@ -136,9 +136,9 @@ class PerformanceTracker:
         if current_liquidity is not None and current_liquidity < 1000:
             update_data['rug_pull_occurred'] = 'yes'
             print(f"  🚨 RUG PULL DETECTED - Liquidity: ${current_liquidity:.2f}")
-        elif current_price < (entry_price * 0.01):  # Price dropped 99%+
+        elif current_price < (entry_price * 0.10):  # Price dropped 90%+
             update_data['rug_pull_occurred'] = 'yes'
-            print(f"  🚨 RUG PULL SUSPECTED - Price crashed 99%+")
+            print(f"  🚨 RUG PULL SUSPECTED - Price crashed 90%+")
 
         # Update time-based price tracking
         if hours_since >= 1 and (not existing or not existing['price_1h_later']):
