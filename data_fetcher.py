@@ -28,23 +28,30 @@ class MemecoinDataFetcher:
                 if not data.get('pairs') or len(data['pairs']) == 0:
                     return None
 
-                # Get the most liquid pair
+                # Get all pairs and sort by liquidity
                 pairs = sorted(data['pairs'], key=lambda x: x.get('liquidity', {}).get('usd', 0), reverse=True)
                 main_pair = pairs[0]
+
+                # Calculate liquidity across all pools
+                main_pool_liquidity = float(main_pair.get('liquidity', {}).get('usd', 0))
+                total_liquidity = sum(float(pair.get('liquidity', {}).get('usd', 0)) for pair in pairs)
+                main_pool_dex = main_pair.get('dexId', 'Unknown')
 
                 # Extract price changes for different timeframes
                 price_change = main_pair.get('priceChange', {})
 
-                # Extract liquidity info
-                liquidity_info = main_pair.get('liquidity', {})
-                liquidity_usd = float(liquidity_info.get('usd', 0))
+                # Extract liquidity info (backward compatibility - use main pool)
+                liquidity_usd = main_pool_liquidity
 
                 # Try to get ATH/ATL if available (not always present)
                 price_usd = float(main_pair.get('priceUsd', 0))
 
                 return {
                     'price_usd': price_usd,
-                    'liquidity_usd': liquidity_usd,
+                    'liquidity_usd': liquidity_usd,  # Backward compatibility
+                    'main_pool_liquidity': main_pool_liquidity,
+                    'total_liquidity': total_liquidity,
+                    'main_pool_dex': main_pool_dex,
                     'volume_24h': float(main_pair.get('volume', {}).get('h24', 0)),
                     'market_cap': float(main_pair.get('fdv', 0)),
                     'price_change_5m': float(price_change.get('m5', 0)) if price_change.get('m5') else None,
@@ -260,6 +267,9 @@ class MemecoinDataFetcher:
         if dex_data:
             combined_data.update({
                 'liquidity_usd': dex_data['liquidity_usd'],
+                'main_pool_liquidity': dex_data.get('main_pool_liquidity'),
+                'total_liquidity': dex_data.get('total_liquidity'),
+                'main_pool_dex': dex_data.get('main_pool_dex'),
                 'volume_24h': dex_data['volume_24h'],
                 'price_usd': dex_data['price_usd'],
                 'market_cap': dex_data['market_cap'],

@@ -197,8 +197,21 @@ class MemecoinAnalyzer:
 
         # Market data
         print(f"\n📊 MARKET DATA:")
-        liquidity = data.get('liquidity_usd', 0)
-        print(f"💧 Liquidity: {self.format_currency(liquidity)}")
+
+        # Display liquidity (with pool breakdown if available)
+        main_pool_liq = data.get('main_pool_liquidity')
+        total_liq = data.get('total_liquidity')
+        main_pool_dex = data.get('main_pool_dex')
+
+        if main_pool_liq and total_liq and main_pool_dex:
+            # Show detailed pool breakdown
+            print(f"💧 Main Pool ({main_pool_dex}): {self.format_currency(main_pool_liq)}")
+            if total_liq > main_pool_liq:
+                print(f"💧 Total Liquidity: {self.format_currency(total_liq)}")
+        else:
+            # Fallback to old format
+            liquidity = data.get('liquidity_usd', 0)
+            print(f"💧 Liquidity: {self.format_currency(liquidity)}")
 
         holders = data.get('holder_count')
         if holders is not None and holders > 0:

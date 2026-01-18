@@ -217,8 +217,9 @@ class MemecoinDatabase:
                 freeze_authority_revoked, rugcheck_score, safety_score, raw_data,
                 price_vs_atl_percent, buy_count_24h, sell_count_24h,
                 price_change_5m, price_change_1h, price_change_24h,
-                all_time_high, all_time_low, liquidity_locked_percent
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                all_time_high, all_time_low, liquidity_locked_percent,
+                main_pool_liquidity, total_liquidity, main_pool_dex
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''', (
             call_id,
             timestamp,
@@ -243,7 +244,10 @@ class MemecoinDatabase:
             data.get('price_change_24h'),
             data.get('all_time_high'),
             data.get('all_time_low'),
-            data.get('liquidity_locked_percent')
+            data.get('liquidity_locked_percent'),
+            data.get('main_pool_liquidity'),
+            data.get('total_liquidity'),
+            data.get('main_pool_dex')
         ))
         self.conn.commit()
         return self.cursor.lastrowid
