@@ -52,14 +52,15 @@ class PerformanceTracker:
                 return {
                     'price': data.get('price_usd'),
                     'liquidity': data.get('liquidity_usd'),
+                    'total_liquidity': data.get('total_liquidity'),
                     'market_cap': data.get('market_cap'),
                     'exists': True
                 }
             else:
-                return {'price': None, 'liquidity': None, 'market_cap': None, 'exists': False}
+                return {'price': None, 'liquidity': None, 'total_liquidity': None, 'market_cap': None, 'exists': False}
         except Exception as e:
             print(f"⚠️  Error fetching price: {e}")
-            return {'price': None, 'liquidity': None, 'market_cap': None, 'exists': False}
+            return {'price': None, 'liquidity': None, 'total_liquidity': None, 'market_cap': None, 'exists': False}
 
     def calculate_gain_loss(self, entry_price: float, current_price: float):
         """Calculate percentage gain/loss."""
@@ -87,6 +88,7 @@ class PerformanceTracker:
 
         current_price = current_data['price']
         current_liquidity = current_data['liquidity']
+        total_liquidity = current_data.get('total_liquidity') or current_liquidity
         current_mcap = current_data['market_cap']
 
         if not current_price:
@@ -133,9 +135,9 @@ class PerformanceTracker:
             update_data['min_price_since_entry'] = current_price
 
         # Determine if this is a rug pull (liquidity dropped significantly or price near zero)
-        if current_liquidity is not None and current_liquidity < 1000:
+        if total_liquidity is not None and total_liquidity < 1000:
             update_data['rug_pull_occurred'] = 'yes'
-            print(f"  🚨 RUG PULL DETECTED - Liquidity: ${current_liquidity:.2f}")
+            print(f"  🚨 RUG PULL DETECTED - Total Liquidity: ${total_liquidity:.2f}")
         elif current_price < (entry_price * 0.10):  # Price dropped 90%+
             update_data['rug_pull_occurred'] = 'yes'
             print(f"  🚨 RUG PULL SUSPECTED - Price crashed 90%+")
