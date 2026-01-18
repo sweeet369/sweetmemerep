@@ -255,17 +255,22 @@ class MemecoinDatabase:
     def insert_decision(self, call_id: int, decision: str, trade_size_usd: Optional[float],
                        entry_price: Optional[float], reasoning_notes: str,
                        emotional_state: str, confidence_level: int,
-                       chart_assessment: Optional[str] = None) -> int:
+                       chart_assessment: Optional[str] = None,
+                       entry_timestamp: Optional[str] = None) -> int:
         """Insert user's trading decision."""
         timestamp = datetime.now().isoformat()
+
+        # If TRADE and no entry_timestamp provided, use now
+        if decision == 'TRADE' and not entry_timestamp:
+            entry_timestamp = timestamp
 
         self.cursor.execute('''
             INSERT INTO my_decisions (
                 call_id, timestamp_decision, my_decision, trade_size_usd,
-                entry_price, reasoning_notes, emotional_state, confidence_level,
-                chart_assessment
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (call_id, timestamp, decision, trade_size_usd, entry_price,
+                entry_price, entry_timestamp, reasoning_notes, emotional_state,
+                confidence_level, chart_assessment
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (call_id, timestamp, decision, trade_size_usd, entry_price, entry_timestamp,
               reasoning_notes, emotional_state, confidence_level, chart_assessment))
         self.conn.commit()
         return self.cursor.lastrowid

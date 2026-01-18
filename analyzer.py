@@ -33,7 +33,8 @@ class MemecoinAnalyzer:
         print("  [5] Add source to existing token")
         print("  [6] Record exit")
         print("  [7] Remove from watchlist")
-        print("  [8] Exit")
+        print("  [8] Convert WATCH to TRADE")
+        print("  [9] Exit")
         print()
 
     def get_safety_rating(self, score: float) -> tuple:
@@ -121,7 +122,7 @@ class MemecoinAnalyzer:
         self.display_analysis(token_symbol, token_name, source, data)
 
         # Get user decision
-        self.get_user_decision(call_id, data)
+        self.get_user_decision(call_id, contract_address, data)
 
         # Update source performance for all sources
         sources = [s.strip() for s in source.split(',')]
@@ -272,7 +273,7 @@ class MemecoinAnalyzer:
         else:
             print(f"\n✅ No major red flags detected!")
 
-    def get_user_decision(self, call_id: int, data: dict):
+    def get_user_decision(self, call_id: int, contract_address: str, data: dict):
         """Get and record user's trading decision."""
         print(f"\n🤔 YOUR DECISION:")
 
@@ -291,10 +292,21 @@ class MemecoinAnalyzer:
 
         # Get additional details
         trade_size_usd = None
-        entry_price = data.get('price_usd')
+        entry_price = data.get('price_usd')  # Default to call price
+        entry_timestamp = None
         chart_assessment = None
 
         if decision == 'TRADE':
+            # Fetch CURRENT price for entry (not snapshot price which is the call price)
+            print("\n⏳ Fetching current price for entry...")
+            current_data = self.fetcher.fetch_dexscreener_data(contract_address)
+            if current_data:
+                entry_price = current_data.get('price_usd')
+                print(f"💰 Current Entry Price: ${entry_price:.10f}")
+            else:
+                print(f"⚠️  Could not fetch current price, using call price: ${entry_price:.10f}")
+
+            entry_timestamp = datetime.now().isoformat()
             try:
                 trade_size_input = input("💵 Position size (USD): ").strip()
                 if trade_size_input:
@@ -340,7 +352,8 @@ class MemecoinAnalyzer:
             reasoning_notes=reasoning_notes,
             emotional_state=emotional_state,
             confidence_level=confidence_level,
-            chart_assessment=chart_assessment
+            chart_assessment=chart_assessment,
+            entry_timestamp=entry_timestamp
         )
 
     def view_source_stats(self):
@@ -499,7 +512,153 @@ class MemecoinAnalyzer:
 
         print("─"*60)
         print(f"\n💡 Tip: Tokens showing strong gains may be good entry opportunities!")
-        print(f"💡 To remove from watchlist, use option [8] Remove from watchlist")
+        print(f"💡 To remove from watchlist, use option [7] Remove from watchlist")
+
+    def convert_watch_to_trade(self):
+        """Convert a WATCH decision to TRADE and record entry."""
+        print("\n" + "━"*60)
+        print("📈 CONVERT WATCH TO TRADE")
+        print("━"*60)
+
+        # Get watchlist tokens with performance data
+        self.db.cursor.execute('''
+            SELECT
+                c.call_id,
+                c.token_symbol,
+                c.token_name,
+                c.contract_address,
+                d.timestamp_decision,
+                p.current_price,
+                p.max_gain_observed,
+                s.price_usd as call_price
+            FROM calls_received c
+            JOIN my_decisions d ON c.call_id = d.call_id
+            LEFT JOIN performance_tracking p ON c.call_id = p.call_id
+            LEFT JOIN initial_snapshot s ON c.call_id = s.call_id
+            WHERE d.my_decision = 'WATCH'
+            ORDER BY d.timestamp_decision DESC
+        ''')
+
+        watchlist = [dict(row) for row in self.db.cursor.fetchall()]
+
+        if not watchlist:
+            print("\n⚠️  Your watchlist is empty!")
+            return
+
+        # Display watchlist with performance
+        print(f"\n📋 Watchlist ({len(watchlist)} tokens):\n")
+        for i, token in enumerate(watchlist, 1):
+            print(f"[{i}] ${token['token_symbol']} - {token['token_name']}")
+            print(f"    🔗 {token['contract_address'][:40]}...")
+
+            call_price = token.get('call_price')
+            current_price = token.get('current_price')
+            max_gain = token.get('max_gain_observed')
+
+            if call_price:
+                print(f"    💰 Call Price: ${call_price:.10f}")
+            if current_price:
+                print(f"    📊 Current Price: ${current_price:.10f}")
+            if max_gain:
+                print(f"    🚀 Max Gain: {max_gain:.2f}%")
+            print()
+
+        # Get user selection
+        try:
+            selection = int(input("Select token number to convert to TRADE (or 0 to cancel): ").strip())
+            if selection == 0:
+                return
+            if selection < 1 or selection > len(watchlist):
+                print("❌ Invalid selection")
+                return
+        except ValueError:
+            print("❌ Invalid input")
+            return
+
+        selected_token = watchlist[selection - 1]
+        call_id = selected_token['call_id']
+        contract_address = selected_token['contract_address']
+
+        print(f"\n🔄 Converting ${selected_token['token_symbol']} to TRADE...")
+
+        # Fetch CURRENT price for entry
+        print("\n⏳ Fetching current price for entry...")
+        current_data = self.fetcher.fetch_dexscreener_data(contract_address)
+
+        if current_data:
+            entry_price = current_data.get('price_usd')
+            print(f"💰 Current Entry Price: ${entry_price:.10f}")
+        else:
+            print(f"⚠️  Could not fetch current price, using last tracked price")
+            entry_price = selected_token.get('current_price') or selected_token.get('call_price')
+            if entry_price:
+                print(f"💰 Entry Price: ${entry_price:.10f}")
+            else:
+                print("❌ Could not determine entry price")
+                return
+
+        entry_timestamp = datetime.now().isoformat()
+
+        # Get TRADE details
+        print(f"\n📝 Enter trade details:")
+
+        # Trade size
+        try:
+            trade_size_input = input("💵 Trade size (USD, e.g., 100): ").strip()
+            if trade_size_input:
+                trade_size_usd = float(trade_size_input)
+            else:
+                print("❌ Trade size is required")
+                return
+        except ValueError:
+            print("❌ Invalid trade size")
+            return
+
+        # Chart assessment
+        chart_assessment = input("📊 Chart assessment (optional): ").strip()
+        if not chart_assessment:
+            chart_assessment = None
+
+        # Reasoning
+        reasoning_notes = input("💭 Reasoning (why converting to TRADE?): ").strip()
+        if not reasoning_notes:
+            reasoning_notes = "Converting from watchlist"
+
+        # Emotional state
+        emotional_state = input("😊 Emotional state [calm/fomo/uncertain]: ").strip().lower()
+        if not emotional_state:
+            emotional_state = "calm"
+
+        # Confidence level
+        try:
+            confidence_input = input("🎯 Confidence (1-10): ").strip()
+            confidence_level = int(confidence_input) if confidence_input else 5
+            confidence_level = max(1, min(10, confidence_level))
+        except ValueError:
+            confidence_level = 5
+
+        # Update the decision from WATCH to TRADE with new entry price
+        self.db.cursor.execute('''
+            UPDATE my_decisions
+            SET my_decision = 'TRADE',
+                trade_size_usd = ?,
+                entry_price = ?,
+                entry_timestamp = ?,
+                reasoning_notes = ?,
+                emotional_state = ?,
+                confidence_level = ?,
+                chart_assessment = ?
+            WHERE call_id = ? AND my_decision = 'WATCH'
+        ''', (trade_size_usd, entry_price, entry_timestamp, reasoning_notes,
+              emotional_state, confidence_level, chart_assessment, call_id))
+
+        self.db.conn.commit()
+
+        print(f"\n✅ ${selected_token['token_symbol']} converted to TRADE!")
+        print(f"💰 Entry Price: ${entry_price:.10f}")
+        print(f"💵 Trade Size: ${trade_size_usd:.2f}")
+        print(f"\n💡 Original call price preserved in initial_snapshot")
+        print(f"💡 Track exit using option [6] Record exit")
 
     def remove_from_watchlist(self):
         """Remove a token from the watchlist."""
@@ -851,11 +1010,13 @@ class MemecoinAnalyzer:
             elif choice == '7':
                 self.remove_from_watchlist()
             elif choice == '8':
+                self.convert_watch_to_trade()
+            elif choice == '9':
                 print("\n👋 Goodbye! Happy trading!")
                 self.db.close()
                 sys.exit(0)
             else:
-                print("⚠️  Invalid choice. Please enter 1-8.")
+                print("⚠️  Invalid choice. Please enter 1-9.")
 
 
 def main():
