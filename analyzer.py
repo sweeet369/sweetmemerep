@@ -377,7 +377,7 @@ class MemecoinAnalyzer:
             name = source['source_name'][:24]
             total = source['total_calls']
             traded = source['calls_traded']
-            win_rate = source['win_rate'] * 100
+            win_rate_raw = source['win_rate']
             hit_rate = source.get('hit_rate', 0.0) * 100  # Get hit_rate, default to 0
             avg_gain = source['avg_max_gain']
             rug_rate = source['rug_rate'] * 100
@@ -385,7 +385,13 @@ class MemecoinAnalyzer:
             # Add tier emoji
             tier_emoji = {'S': '🏆', 'A': '🥇', 'B': '🥈', 'C': '🥉'}.get(tier, '📊')
 
-            print(f"{tier_emoji} {tier:<4} {name:<25} {total:<8} {traded:<8} {win_rate:>6.1f}% {hit_rate:>6.1f}% {avg_gain:>10.1f}% {rug_rate:>6.1f}%")
+            # Format win rate: Show N/A if no trades, otherwise show percentage
+            if traded == 0:
+                win_rate_str = "   N/A"
+            else:
+                win_rate_str = f"{win_rate_raw * 100:>6.1f}%"
+
+            print(f"{tier_emoji} {tier:<4} {name:<25} {total:<8} {traded:<8} {win_rate_str:<8} {hit_rate:>6.1f}% {avg_gain:>10.1f}% {rug_rate:>6.1f}%")
 
     def view_watchlist(self):
         """Display performance of all tokens in watchlist."""

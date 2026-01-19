@@ -414,6 +414,8 @@ class MemecoinDatabase:
             SELECT
                 c.call_id,
                 d.my_decision,
+                d.entry_price,
+                d.actual_exit_price,
                 p.max_gain_observed,
                 p.rug_pull_occurred
             FROM calls_received c
@@ -437,8 +439,14 @@ class MemecoinDatabase:
         rugs = sum(1 for c in calls if c['rug_pull_occurred'] == 'yes')
         rug_rate = rugs / total_calls if total_calls > 0 else 0.0
 
-        wins = sum(1 for c in calls if c['max_gain_observed'] and c['max_gain_observed'] > 0)
-        win_rate = wins / calls_traded if calls_traded > 0 else 0.0
+        # Win rate: Only count TRADE decisions with exits where actual_exit_price > entry_price
+        traded_calls = [c for c in calls if c['my_decision'] == 'TRADE']
+        exited_trades = [c for c in traded_calls
+                        if c['actual_exit_price'] is not None
+                        and c['actual_exit_price'] > 0
+                        and c['entry_price'] is not None]
+        wins = sum(1 for c in exited_trades if c['actual_exit_price'] > c['entry_price'])
+        win_rate = wins / len(exited_trades) if exited_trades else 0.0
 
         # Calculate hit rate (% of calls that reached +50% at any point)
         hits = sum(1 for c in calls if c['max_gain_observed'] and c['max_gain_observed'] >= HIT_THRESHOLD)
