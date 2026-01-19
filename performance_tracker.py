@@ -21,7 +21,7 @@ class PerformanceTracker:
         self.fetcher = MemecoinDataFetcher()
 
     def get_all_tracked_tokens(self):
-        """Get all tokens that need performance tracking."""
+        """Get all tokens that need performance tracking (WATCH or open TRADE positions only)."""
         self.db.cursor.execute('''
             SELECT
                 c.call_id,
@@ -30,9 +30,16 @@ class PerformanceTracker:
                 c.token_name,
                 c.source,
                 s.snapshot_timestamp,
-                s.price_usd as entry_price
+                s.price_usd as entry_price,
+                d.my_decision,
+                d.actual_exit_price
             FROM calls_received c
             JOIN initial_snapshot s ON c.call_id = s.call_id
+            JOIN my_decisions d ON c.call_id = d.call_id
+            WHERE (
+                d.my_decision = 'WATCH'
+                OR (d.my_decision = 'TRADE' AND (d.actual_exit_price IS NULL OR d.actual_exit_price = 0))
+            )
             ORDER BY s.snapshot_timestamp DESC
         ''')
         return [dict(row) for row in self.db.cursor.fetchall()]
@@ -185,7 +192,9 @@ class PerformanceTracker:
         tokens = self.get_all_tracked_tokens()
 
         if not tokens:
-            print("\n⚠️  No tokens to track yet. Analyze some tokens first!")
+            print("\n⚠️  No active tokens to track!")
+            print("💡 Tokens are only tracked if they are WATCH or open TRADE positions.")
+            print("💡 PASS decisions and closed trades (with exit recorded) are not tracked.")
             return
 
         # Filter by age if specified
@@ -193,7 +202,7 @@ class PerformanceTracker:
             tokens = [t for t in tokens
                      if self.calculate_time_since_snapshot(t['snapshot_timestamp']) >= min_age_hours]
 
-        print(f"\n📋 Found {len(tokens)} token(s) to update")
+        print(f"\n📋 Found {len(tokens)} active token(s) to update (WATCH or open TRADE positions)")
 
         if limit:
             tokens = tokens[:limit]
