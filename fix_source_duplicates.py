@@ -18,42 +18,83 @@ def main():
     print("🔧 FIXING SOURCE NAME DUPLICATES")
     print("="*60)
 
-    # Get all unique sources
+    # Step 1: Fix calls_received table
+    print("\n📋 Step 1: Checking calls_received table...")
     cursor.execute("SELECT DISTINCT source FROM calls_received")
     sources = [row[0] for row in cursor.fetchall()]
 
-    print(f"\n📋 Found {len(sources)} unique source entries")
+    print(f"   Found {len(sources)} unique source entries")
 
     # Find sources that need normalization
-    updates_needed = []
+    calls_updates_needed = []
     for source in sources:
         if source and source != source.lower():
-            updates_needed.append((source, source.lower()))
+            calls_updates_needed.append((source, source.lower()))
             print(f"   ❌ '{source}' → '{source.lower()}'")
 
-    if not updates_needed:
-        print("\n✅ All sources are already lowercase!")
-        conn.close()
-        return
+    if calls_updates_needed:
+        print(f"\n🔄 Normalizing {len(calls_updates_needed)} source(s) in calls_received...")
+        for old_source, new_source in calls_updates_needed:
+            cursor.execute('''
+                UPDATE calls_received
+                SET source = ?
+                WHERE source = ?
+            ''', (new_source, old_source))
+            print(f"   ✅ Updated calls: '{old_source}' → '{new_source}'")
+    else:
+        print("   ✅ All sources in calls_received are already lowercase!")
 
-    print(f"\n🔄 Normalizing {len(updates_needed)} source(s)...")
+    # Step 2: Fix source_performance table - check for case-sensitive duplicates
+    print("\n📋 Step 2: Checking source_performance table for duplicates...")
+    cursor.execute("SELECT DISTINCT source_name FROM source_performance")
+    perf_sources = [row[0] for row in cursor.fetchall()]
 
-    # Update calls_received table
-    for old_source, new_source in updates_needed:
-        cursor.execute('''
-            UPDATE calls_received
-            SET source = ?
-            WHERE source = ?
-        ''', (new_source, old_source))
-        print(f"   ✅ Updated calls: '{old_source}' → '{new_source}'")
+    print(f"   Found {len(perf_sources)} unique source entries")
 
-    # Clean up source_performance table (delete old entries, they'll be recalculated)
-    for old_source, new_source in updates_needed:
-        cursor.execute('''
-            DELETE FROM source_performance
-            WHERE source_name = ?
-        ''', (old_source,))
-        print(f"   🗑️  Removed old stats for: '{old_source}'")
+    # Group sources by their lowercase version to find duplicates
+    lowercase_groups = {}
+    for source in perf_sources:
+        if source:
+            lower = source.lower()
+            if lower not in lowercase_groups:
+                lowercase_groups[lower] = []
+            lowercase_groups[lower].append(source)
+
+    # Find groups with multiple case variations
+    duplicates_found = []
+    for lower, variants in lowercase_groups.items():
+        if len(variants) > 1:
+            duplicates_found.append((lower, variants))
+            print(f"   ❌ Duplicate: {variants} → '{lower}'")
+
+    if duplicates_found:
+        print(f"\n🔄 Cleaning up {len(duplicates_found)} duplicate source(s)...")
+        for lower, variants in duplicates_found:
+            # Delete ALL variants from source_performance
+            for variant in variants:
+                cursor.execute('''
+                    DELETE FROM source_performance
+                    WHERE source_name = ?
+                ''', (variant,))
+                print(f"   🗑️  Removed: '{variant}'")
+    else:
+        # Still check for uppercase entries even if not duplicates
+        uppercase_found = []
+        for source in perf_sources:
+            if source and source != source.lower():
+                uppercase_found.append(source)
+                print(f"   ❌ Uppercase entry: '{source}' → '{source.lower()}'")
+
+        if uppercase_found:
+            print(f"\n🔄 Cleaning up {len(uppercase_found)} uppercase source(s)...")
+            for source in uppercase_found:
+                cursor.execute('''
+                    DELETE FROM source_performance
+                    WHERE source_name = ?
+                ''', (source,))
+                print(f"   🗑️  Removed: '{source}'")
+        else:
+            print("   ✅ No duplicates or uppercase entries in source_performance!")
 
     conn.commit()
     conn.close()
