@@ -31,10 +31,11 @@ class MemecoinAnalyzer:
         print("  [3] Watchlist performance")
         print("  [4] Manage tracked wallets")
         print("  [5] Add source to existing token")
-        print("  [6] Record exit")
-        print("  [7] Remove from watchlist")
-        print("  [8] Convert WATCH to TRADE")
-        print("  [9] Exit")
+        print("  [6] View open positions")
+        print("  [7] Convert WATCH to TRADE")
+        print("  [8] Record exit")
+        print("  [9] Remove from watchlist")
+        print("  [0] Exit")
         print()
 
     def get_safety_rating(self, score: float) -> tuple:
@@ -512,7 +513,168 @@ class MemecoinAnalyzer:
 
         print("─"*60)
         print(f"\n💡 Tip: Tokens showing strong gains may be good entry opportunities!")
-        print(f"💡 To remove from watchlist, use option [7] Remove from watchlist")
+        print(f"💡 To remove from watchlist, use option [9] Remove from watchlist")
+
+    def view_open_positions(self):
+        """Display all open trading positions with current performance."""
+        print("\n" + "="*70)
+        print("📈 OPEN POSITIONS")
+        print("="*70)
+
+        # Get all TRADE decisions without exit
+        self.db.cursor.execute('''
+            SELECT
+                c.call_id, c.contract_address, c.token_symbol, c.token_name, c.source,
+                s.price_usd as call_price,
+                s.liquidity_usd as entry_liquidity,
+                s.market_cap as entry_mcap,
+                d.entry_price,
+                d.entry_timestamp,
+                d.trade_size_usd,
+                d.chart_assessment,
+                d.confidence_level,
+                d.reasoning_notes,
+                d.timestamp_decision,
+                p.max_gain_observed,
+                p.max_loss_observed,
+                p.rug_pull_occurred
+            FROM calls_received c
+            JOIN my_decisions d ON c.call_id = d.call_id
+            JOIN initial_snapshot s ON c.call_id = s.call_id
+            LEFT JOIN performance_tracking p ON c.call_id = p.call_id
+            WHERE d.my_decision = 'TRADE'
+            AND (d.actual_exit_price IS NULL OR d.actual_exit_price = 0)
+            ORDER BY d.entry_timestamp DESC
+        ''')
+
+        positions = [dict(row) for row in self.db.cursor.fetchall()]
+
+        if not positions:
+            print("\n📭 No open positions. You're all cash!")
+            print("💡 Use [1] Analyze new call or [7] Convert WATCH to TRADE to open positions.")
+            return
+
+        # Calculate totals
+        total_invested = 0
+        total_current_value = 0
+        total_pnl_usd = 0
+
+        print(f"\n📊 You have {len(positions)} open position(s)\n")
+        print("─"*70)
+
+        for i, pos in enumerate(positions, 1):
+            symbol = pos['token_symbol'] or 'Unknown'
+            name = pos['token_name'] or 'Unknown'
+            source = pos['source'] or 'Unknown'
+
+            # Fetch current price
+            current_data = self.fetcher.fetch_dexscreener_data(pos['contract_address'])
+            current_price = current_data.get('price_usd') if current_data else None
+            current_liquidity = current_data.get('liquidity_usd') if current_data else None
+            current_mcap = current_data.get('market_cap') if current_data else None
+
+            # Calculate P&L
+            entry_price = pos['entry_price'] or pos['call_price']
+            call_price = pos['call_price']
+            trade_size = pos['trade_size_usd'] or 0
+
+            if current_price and entry_price:
+                pnl_percent = ((current_price - entry_price) / entry_price) * 100
+                pnl_from_call = ((current_price - call_price) / call_price) * 100 if call_price else 0
+
+                if trade_size > 0:
+                    current_value = trade_size * (1 + pnl_percent/100)
+                    pnl_usd = current_value - trade_size
+                    total_invested += trade_size
+                    total_current_value += current_value
+                    total_pnl_usd += pnl_usd
+            else:
+                pnl_percent = 0
+                pnl_from_call = 0
+                current_value = trade_size
+                pnl_usd = 0
+
+            # Display position
+            pnl_emoji = "🟢" if pnl_percent > 0 else "🔴" if pnl_percent < 0 else "⚪"
+
+            print(f"\n[{i}] {pnl_emoji} ${symbol} - {name}")
+            print(f"    📍 Source: {source}")
+            print(f"    🔗 {pos['contract_address'][:30]}...")
+
+            # Price info
+            print(f"\n    💵 PRICES:")
+            print(f"       📞 Call Price:    ${call_price:.10f}" if call_price else "       📞 Call Price:    N/A")
+            print(f"       💰 Entry Price:   ${entry_price:.10f}" if entry_price else "       💰 Entry Price:   N/A")
+            print(f"       📊 Current Price: ${current_price:.10f}" if current_price else "       📊 Current Price: N/A")
+
+            # P&L
+            print(f"\n    📈 PERFORMANCE:")
+            if pnl_percent != 0:
+                pnl_indicator = "📈" if pnl_percent > 0 else "📉"
+                print(f"       {pnl_indicator} P&L from Entry: {pnl_percent:+.2f}%")
+                print(f"       {pnl_indicator} P&L from Call:  {pnl_from_call:+.2f}%")
+
+            # Position size
+            if trade_size > 0:
+                print(f"\n    💼 POSITION:")
+                print(f"       Invested:  ${trade_size:,.2f}")
+                print(f"       Current:   ${current_value:,.2f}")
+                print(f"       P&L (USD): ${pnl_usd:+,.2f}")
+
+            # Max gain/loss observed
+            if pos['max_gain_observed'] is not None:
+                print(f"\n    📊 RANGE:")
+                print(f"       Best:  {pos['max_gain_observed']:+.2f}%")
+                print(f"       Worst: {pos['max_loss_observed']:.2f}%")
+
+            # Liquidity check
+            if current_liquidity:
+                liq_change = ((current_liquidity - pos['entry_liquidity']) / pos['entry_liquidity'] * 100) if pos['entry_liquidity'] else 0
+                liq_emoji = "🟢" if liq_change > 0 else "🔴" if liq_change < -30 else "🟡"
+                print(f"\n    💧 LIQUIDITY:")
+                print(f"       {liq_emoji} Current: {self.format_currency(current_liquidity)} ({liq_change:+.1f}%)")
+
+            # Trade details
+            print(f"\n    📝 DETAILS:")
+            if pos['chart_assessment']:
+                print(f"       Chart: {pos['chart_assessment']}")
+            if pos['confidence_level']:
+                print(f"       Confidence: {pos['confidence_level']}/10")
+            if pos['reasoning_notes']:
+                print(f"       Notes: {pos['reasoning_notes'][:40]}...")
+
+            # Entry time
+            if pos['entry_timestamp']:
+                entry_time = datetime.fromisoformat(pos['entry_timestamp'])
+                days_held = (datetime.now() - entry_time).days
+                hours_held = (datetime.now() - entry_time).seconds // 3600
+                if days_held > 0:
+                    print(f"       Held: {days_held}d {hours_held}h")
+                else:
+                    print(f"       Held: {hours_held}h")
+
+            # Rug warning
+            if pos['rug_pull_occurred'] == 'yes':
+                print(f"\n    🚨 WARNING: RUG PULL DETECTED!")
+
+            print("─"*70)
+
+        # Portfolio summary
+        if total_invested > 0:
+            total_pnl_percent = ((total_current_value - total_invested) / total_invested) * 100
+            summary_emoji = "🟢" if total_pnl_percent > 0 else "🔴" if total_pnl_percent < 0 else "⚪"
+
+            print(f"\n{'='*70}")
+            print(f"📊 PORTFOLIO SUMMARY")
+            print(f"{'='*70}")
+            print(f"   Total Invested:     ${total_invested:,.2f}")
+            print(f"   Current Value:      ${total_current_value:,.2f}")
+            print(f"   {summary_emoji} Total P&L:          ${total_pnl_usd:+,.2f} ({total_pnl_percent:+.2f}%)")
+            print(f"{'='*70}")
+
+        print(f"\n💡 Tips:")
+        print(f"   • Use [8] Record exit to close a position")
+        print(f"   • Run 'python3 performance_tracker.py' to update max gain/loss")
 
     def convert_watch_to_trade(self):
         """Convert a WATCH decision to TRADE and record entry."""
@@ -1006,17 +1168,19 @@ class MemecoinAnalyzer:
             elif choice == '5':
                 self.add_source_to_existing_token()
             elif choice == '6':
-                self.record_exit_trade()
+                self.view_open_positions()
             elif choice == '7':
-                self.remove_from_watchlist()
-            elif choice == '8':
                 self.convert_watch_to_trade()
+            elif choice == '8':
+                self.record_exit_trade()
             elif choice == '9':
+                self.remove_from_watchlist()
+            elif choice == '0':
                 print("\n👋 Goodbye! Happy trading!")
                 self.db.close()
                 sys.exit(0)
             else:
-                print("⚠️  Invalid choice. Please enter 1-9.")
+                print("⚠️  Invalid choice. Please enter 0-9.")
 
 
 def main():
