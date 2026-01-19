@@ -77,8 +77,8 @@ class MemecoinAnalyzer:
         if not source_input:
             source = "Unknown"
         else:
-            # Clean up sources: split by comma, strip whitespace, remove empties
-            sources = [s.strip() for s in source_input.split(',') if s.strip()]
+            # Clean up sources: split by comma, strip whitespace, normalize to lowercase
+            sources = [s.strip().lower() for s in source_input.split(',') if s.strip()]
             source = ', '.join(sources)  # Store as comma-separated string
 
         # Get blockchain
@@ -1041,11 +1041,11 @@ class MemecoinAnalyzer:
             print("❌ No sources provided")
             return
 
-        # Parse new sources
-        new_sources = [s.strip() for s in new_sources_input.split(',') if s.strip()]
+        # Parse new sources (normalize to lowercase)
+        new_sources = [s.strip().lower() for s in new_sources_input.split(',') if s.strip()]
 
-        # Get existing sources
-        existing_sources = [s.strip() for s in call['source'].split(',') if s.strip()]
+        # Get existing sources (normalize to lowercase)
+        existing_sources = [s.strip().lower() for s in call['source'].split(',') if s.strip()]
 
         # Merge (avoid duplicates)
         all_sources = existing_sources.copy()
