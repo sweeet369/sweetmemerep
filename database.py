@@ -1,5 +1,6 @@
 import sqlite3
 import json
+import os
 from datetime import datetime
 from typing import Optional, Dict, Any, List
 
@@ -7,11 +8,14 @@ from typing import Optional, Dict, Any, List
 # Constants for source performance calculations
 HIT_THRESHOLD = 50.0  # Minimum gain % to count as hit
 
+# Default database path - in the same directory as this script
+DEFAULT_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "memecoin_analyzer.db")
+
 
 class MemecoinDatabase:
     """SQLite database manager for memecoin trading analyzer."""
 
-    def __init__(self, db_path: str = "/Users/shecksaad/Desktop/sweetmemerep/memecoin_analyzer.db"):
+    def __init__(self, db_path: str = DEFAULT_DB_PATH):
         """Initialize database connection and create tables if needed."""
         self.db_path = db_path
         self.conn = sqlite3.connect(db_path)
