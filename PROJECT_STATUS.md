@@ -4,6 +4,14 @@
 
 ---
 
+## REMINDER: Reset Supabase Password!
+Your database password was exposed in a conversation. When you have time:
+1. Go to Supabase → Settings → Database → Reset database password
+2. Update GitHub secret (Settings → Secrets → Actions → DATABASE_URL) with new password
+3. Delete this reminder once done
+
+---
+
 ## What Was Accomplished Today
 
 ### Cloud Setup (COMPLETED)
