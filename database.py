@@ -1,4 +1,3 @@
-import sqlite3
 import json
 import os
 from datetime import datetime
@@ -8,25 +7,67 @@ from typing import Optional, Dict, Any, List
 # Constants for source performance calculations
 HIT_THRESHOLD = 50.0  # Minimum gain % to count as hit
 
-# Default database path - in the same directory as this script
+# Default database path - in the same directory as this script (for SQLite)
 DEFAULT_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "memecoin_analyzer.db")
+
+# Check if we should use PostgreSQL (Supabase) or SQLite
+DATABASE_URL = os.environ.get('DATABASE_URL')
+
+
+def get_db_connection():
+    """Get database connection based on environment."""
+    if DATABASE_URL:
+        import psycopg2
+        from psycopg2.extras import RealDictCursor
+        conn = psycopg2.connect(DATABASE_URL)
+        return conn, 'postgres'
+    else:
+        import sqlite3
+        conn = sqlite3.connect(DEFAULT_DB_PATH)
+        conn.row_factory = sqlite3.Row
+        return conn, 'sqlite'
 
 
 class MemecoinDatabase:
-    """SQLite database manager for memecoin trading analyzer."""
+    """Database manager for memecoin trading analyzer. Supports SQLite and PostgreSQL."""
 
-    def __init__(self, db_path: str = DEFAULT_DB_PATH):
-        """Initialize database connection and create tables if needed."""
-        self.db_path = db_path
-        self.conn = sqlite3.connect(db_path)
-        self.conn.row_factory = sqlite3.Row
-        self.cursor = self.conn.cursor()
-        self.create_tables()
+    def __init__(self, db_path: str = None):
+        """Initialize database connection."""
+        self.db_type = None
+
+        if DATABASE_URL:
+            # Use PostgreSQL (Supabase)
+            import psycopg2
+            from psycopg2.extras import RealDictCursor
+            self.conn = psycopg2.connect(DATABASE_URL)
+            self.cursor = self.conn.cursor(cursor_factory=RealDictCursor)
+            self.db_type = 'postgres'
+            self.db_path = DATABASE_URL[:50] + '...'  # Truncate for display
+        else:
+            # Use SQLite
+            import sqlite3
+            self.db_path = db_path or DEFAULT_DB_PATH
+            self.conn = sqlite3.connect(self.db_path)
+            self.conn.row_factory = sqlite3.Row
+            self.cursor = self.conn.cursor()
+            self.db_type = 'sqlite'
+            self.create_tables()
+
+    def _placeholder(self):
+        """Return the correct placeholder for the database type."""
+        return '%s' if self.db_type == 'postgres' else '?'
+
+    def _placeholders(self, count: int):
+        """Return multiple placeholders."""
+        p = self._placeholder()
+        return ', '.join([p] * count)
 
     def create_tables(self):
-        """Create all database tables if they don't exist."""
+        """Create all database tables if they don't exist (SQLite only - PostgreSQL uses migration)."""
+        if self.db_type == 'postgres':
+            return  # Tables created via SQL migration in Supabase
 
-        # Table 1: calls_received
+        # SQLite table creation (same as before)
         self.cursor.execute('''
             CREATE TABLE IF NOT EXISTS calls_received (
                 call_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -39,7 +80,6 @@ class MemecoinDatabase:
             )
         ''')
 
-        # Table 2: initial_snapshot
         self.cursor.execute('''
             CREATE TABLE IF NOT EXISTS initial_snapshot (
                 snapshot_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -58,11 +98,22 @@ class MemecoinDatabase:
                 rugcheck_score REAL,
                 safety_score REAL,
                 raw_data TEXT,
+                price_vs_atl_percent REAL,
+                buy_count_24h INTEGER,
+                sell_count_24h INTEGER,
+                price_change_5m REAL,
+                price_change_1h REAL,
+                price_change_24h REAL,
+                all_time_high REAL,
+                all_time_low REAL,
+                liquidity_locked_percent REAL,
+                main_pool_liquidity REAL,
+                total_liquidity REAL,
+                main_pool_dex TEXT,
                 FOREIGN KEY (call_id) REFERENCES calls_received (call_id)
             )
         ''')
 
-        # Table 3: my_decisions
         self.cursor.execute('''
             CREATE TABLE IF NOT EXISTS my_decisions (
                 decision_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -71,14 +122,17 @@ class MemecoinDatabase:
                 my_decision TEXT NOT NULL,
                 trade_size_usd REAL,
                 entry_price REAL,
+                entry_timestamp TEXT,
                 reasoning_notes TEXT,
                 emotional_state TEXT,
                 confidence_level INTEGER,
+                chart_assessment TEXT,
+                actual_exit_price REAL,
+                hold_duration_hours REAL,
                 FOREIGN KEY (call_id) REFERENCES calls_received (call_id)
             )
         ''')
 
-        # Table 4: performance_tracking
         self.cursor.execute('''
             CREATE TABLE IF NOT EXISTS performance_tracking (
                 tracking_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -94,69 +148,13 @@ class MemecoinDatabase:
                 max_loss_observed REAL,
                 token_still_alive TEXT,
                 rug_pull_occurred TEXT,
+                checkpoint_type TEXT,
+                max_price_since_entry REAL,
+                min_price_since_entry REAL,
                 FOREIGN KEY (call_id) REFERENCES calls_received (call_id)
             )
         ''')
 
-        # Add columns if they don't exist (for existing databases)
-        try:
-            self.cursor.execute('ALTER TABLE performance_tracking ADD COLUMN current_mcap REAL')
-            self.conn.commit()
-        except sqlite3.OperationalError:
-            pass
-
-        try:
-            self.cursor.execute('ALTER TABLE performance_tracking ADD COLUMN current_liquidity REAL')
-            self.conn.commit()
-        except sqlite3.OperationalError:
-            pass
-
-        # Migration: Add new columns to my_decisions
-        migrations_my_decisions = [
-            'ALTER TABLE my_decisions ADD COLUMN chart_assessment TEXT',
-            'ALTER TABLE my_decisions ADD COLUMN actual_exit_price REAL',
-            'ALTER TABLE my_decisions ADD COLUMN hold_duration_hours REAL'
-        ]
-        for migration in migrations_my_decisions:
-            try:
-                self.cursor.execute(migration)
-                self.conn.commit()
-            except sqlite3.OperationalError:
-                pass
-
-        # Migration: Add new columns to initial_snapshot
-        migrations_initial_snapshot = [
-            'ALTER TABLE initial_snapshot ADD COLUMN price_vs_atl_percent REAL',
-            'ALTER TABLE initial_snapshot ADD COLUMN buy_count_24h INTEGER',
-            'ALTER TABLE initial_snapshot ADD COLUMN sell_count_24h INTEGER',
-            'ALTER TABLE initial_snapshot ADD COLUMN price_change_5m REAL',
-            'ALTER TABLE initial_snapshot ADD COLUMN price_change_1h REAL',
-            'ALTER TABLE initial_snapshot ADD COLUMN price_change_24h REAL',
-            'ALTER TABLE initial_snapshot ADD COLUMN all_time_high REAL',
-            'ALTER TABLE initial_snapshot ADD COLUMN all_time_low REAL',
-            'ALTER TABLE initial_snapshot ADD COLUMN liquidity_locked_percent REAL'
-        ]
-        for migration in migrations_initial_snapshot:
-            try:
-                self.cursor.execute(migration)
-                self.conn.commit()
-            except sqlite3.OperationalError:
-                pass
-
-        # Migration: Add new columns to performance_tracking
-        migrations_performance_tracking = [
-            'ALTER TABLE performance_tracking ADD COLUMN checkpoint_type TEXT',
-            'ALTER TABLE performance_tracking ADD COLUMN max_price_since_entry REAL',
-            'ALTER TABLE performance_tracking ADD COLUMN min_price_since_entry REAL'
-        ]
-        for migration in migrations_performance_tracking:
-            try:
-                self.cursor.execute(migration)
-                self.conn.commit()
-            except sqlite3.OperationalError:
-                pass
-
-        # Table 5: source_performance
         self.cursor.execute('''
             CREATE TABLE IF NOT EXISTS source_performance (
                 source_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -166,12 +164,12 @@ class MemecoinDatabase:
                 win_rate REAL DEFAULT 0.0,
                 avg_max_gain REAL DEFAULT 0.0,
                 rug_rate REAL DEFAULT 0.0,
+                hit_rate REAL DEFAULT 0.0,
                 tier TEXT DEFAULT 'C',
                 last_updated TEXT NOT NULL
             )
         ''')
 
-        # Table 6: tracked_wallets
         self.cursor.execute('''
             CREATE TABLE IF NOT EXISTS tracked_wallets (
                 wallet_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -188,43 +186,66 @@ class MemecoinDatabase:
 
         self.conn.commit()
 
+    def _execute(self, query: str, params: tuple = None):
+        """Execute a query with proper placeholder substitution."""
+        if self.db_type == 'postgres':
+            # Replace ? with %s for PostgreSQL
+            query = query.replace('?', '%s')
+        self.cursor.execute(query, params or ())
+
+    def _fetchone(self):
+        """Fetch one result as dict."""
+        row = self.cursor.fetchone()
+        if row is None:
+            return None
+        if self.db_type == 'postgres':
+            return dict(row)
+        return dict(row)
+
+    def _fetchall(self):
+        """Fetch all results as list of dicts."""
+        rows = self.cursor.fetchall()
+        return [dict(row) for row in rows]
+
     def insert_call(self, contract_address: str, token_symbol: str, token_name: str,
                     source: str, blockchain: str = "Solana") -> int:
         """Insert a new call received record."""
         timestamp = datetime.now().isoformat()
 
         try:
-            self.cursor.execute('''
-                INSERT INTO calls_received
-                (timestamp_received, contract_address, token_symbol, token_name, source, blockchain)
-                VALUES (?, ?, ?, ?, ?, ?)
-            ''', (timestamp, contract_address, token_symbol, token_name, source, blockchain))
-            self.conn.commit()
-            return self.cursor.lastrowid
-        except sqlite3.IntegrityError:
+            if self.db_type == 'postgres':
+                self._execute('''
+                    INSERT INTO calls_received
+                    (timestamp_received, contract_address, token_symbol, token_name, source, blockchain)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    RETURNING call_id
+                ''', (timestamp, contract_address, token_symbol, token_name, source, blockchain))
+                result = self._fetchone()
+                self.conn.commit()
+                return result['call_id']
+            else:
+                self._execute('''
+                    INSERT INTO calls_received
+                    (timestamp_received, contract_address, token_symbol, token_name, source, blockchain)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                ''', (timestamp, contract_address, token_symbol, token_name, source, blockchain))
+                self.conn.commit()
+                return self.cursor.lastrowid
+        except Exception as e:
+            self.conn.rollback()
             # Contract address already exists, return existing call_id
-            self.cursor.execute(
+            self._execute(
                 'SELECT call_id FROM calls_received WHERE contract_address = ?',
                 (contract_address,)
             )
-            return self.cursor.fetchone()[0]
+            result = self._fetchone()
+            return result['call_id'] if result else -1
 
     def insert_snapshot(self, call_id: int, data: Dict[str, Any]) -> int:
         """Insert initial snapshot data."""
         timestamp = datetime.now().isoformat()
 
-        self.cursor.execute('''
-            INSERT INTO initial_snapshot (
-                call_id, snapshot_timestamp, liquidity_usd, holder_count,
-                top_holder_percent, top_10_holders_percent, token_age_hours,
-                market_cap, volume_24h, price_usd, mint_authority_revoked,
-                freeze_authority_revoked, rugcheck_score, safety_score, raw_data,
-                price_vs_atl_percent, buy_count_24h, sell_count_24h,
-                price_change_5m, price_change_1h, price_change_24h,
-                all_time_high, all_time_low, liquidity_locked_percent,
-                main_pool_liquidity, total_liquidity, main_pool_dex
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (
+        params = (
             call_id,
             timestamp,
             data.get('liquidity_usd'),
@@ -252,9 +273,40 @@ class MemecoinDatabase:
             data.get('main_pool_liquidity'),
             data.get('total_liquidity'),
             data.get('main_pool_dex')
-        ))
-        self.conn.commit()
-        return self.cursor.lastrowid
+        )
+
+        if self.db_type == 'postgres':
+            self._execute('''
+                INSERT INTO initial_snapshot (
+                    call_id, snapshot_timestamp, liquidity_usd, holder_count,
+                    top_holder_percent, top_10_holders_percent, token_age_hours,
+                    market_cap, volume_24h, price_usd, mint_authority_revoked,
+                    freeze_authority_revoked, rugcheck_score, safety_score, raw_data,
+                    price_vs_atl_percent, buy_count_24h, sell_count_24h,
+                    price_change_5m, price_change_1h, price_change_24h,
+                    all_time_high, all_time_low, liquidity_locked_percent,
+                    main_pool_liquidity, total_liquidity, main_pool_dex
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                RETURNING snapshot_id
+            ''', params)
+            result = self._fetchone()
+            self.conn.commit()
+            return result['snapshot_id']
+        else:
+            self._execute('''
+                INSERT INTO initial_snapshot (
+                    call_id, snapshot_timestamp, liquidity_usd, holder_count,
+                    top_holder_percent, top_10_holders_percent, token_age_hours,
+                    market_cap, volume_24h, price_usd, mint_authority_revoked,
+                    freeze_authority_revoked, rugcheck_score, safety_score, raw_data,
+                    price_vs_atl_percent, buy_count_24h, sell_count_24h,
+                    price_change_5m, price_change_1h, price_change_24h,
+                    all_time_high, all_time_low, liquidity_locked_percent,
+                    main_pool_liquidity, total_liquidity, main_pool_dex
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', params)
+            self.conn.commit()
+            return self.cursor.lastrowid
 
     def insert_decision(self, call_id: int, decision: str, trade_size_usd: Optional[float],
                        entry_price: Optional[float], reasoning_notes: str,
@@ -264,39 +316,51 @@ class MemecoinDatabase:
         """Insert user's trading decision."""
         timestamp = datetime.now().isoformat()
 
-        # If TRADE and no entry_timestamp provided, use now
         if decision == 'TRADE' and not entry_timestamp:
             entry_timestamp = timestamp
 
-        self.cursor.execute('''
-            INSERT INTO my_decisions (
-                call_id, timestamp_decision, my_decision, trade_size_usd,
-                entry_price, entry_timestamp, reasoning_notes, emotional_state,
-                confidence_level, chart_assessment
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (call_id, timestamp, decision, trade_size_usd, entry_price, entry_timestamp,
-              reasoning_notes, emotional_state, confidence_level, chart_assessment))
-        self.conn.commit()
-        return self.cursor.lastrowid
+        params = (call_id, timestamp, decision, trade_size_usd, entry_price, entry_timestamp,
+                  reasoning_notes, emotional_state, confidence_level, chart_assessment)
+
+        if self.db_type == 'postgres':
+            self._execute('''
+                INSERT INTO my_decisions (
+                    call_id, timestamp_decision, my_decision, trade_size_usd,
+                    entry_price, entry_timestamp, reasoning_notes, emotional_state,
+                    confidence_level, chart_assessment
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                RETURNING decision_id
+            ''', params)
+            result = self._fetchone()
+            self.conn.commit()
+            return result['decision_id']
+        else:
+            self._execute('''
+                INSERT INTO my_decisions (
+                    call_id, timestamp_decision, my_decision, trade_size_usd,
+                    entry_price, entry_timestamp, reasoning_notes, emotional_state,
+                    confidence_level, chart_assessment
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', params)
+            self.conn.commit()
+            return self.cursor.lastrowid
 
     def record_exit(self, call_id: int, exit_price: float) -> bool:
         """Record exit from a trade and calculate hold duration."""
-        # Get the decision entry timestamp
-        self.cursor.execute('''
+        self._execute('''
             SELECT timestamp_decision FROM my_decisions
             WHERE call_id = ? AND my_decision = 'TRADE'
         ''', (call_id,))
 
-        result = self.cursor.fetchone()
+        result = self._fetchone()
         if not result:
             return False
 
         entry_time = datetime.fromisoformat(result['timestamp_decision'])
         exit_time = datetime.now()
-        hold_duration = (exit_time - entry_time).total_seconds() / 3600  # hours
+        hold_duration = (exit_time - entry_time).total_seconds() / 3600
 
-        # Update the decision record with exit data
-        self.cursor.execute('''
+        self._execute('''
             UPDATE my_decisions SET
                 actual_exit_price = ?,
                 hold_duration_hours = ?
@@ -308,7 +372,7 @@ class MemecoinDatabase:
 
     def get_open_trades(self) -> List[Dict[str, Any]]:
         """Get all open trades (TRADE decisions without exit recorded)."""
-        self.cursor.execute('''
+        self._execute('''
             SELECT
                 c.call_id,
                 c.token_symbol,
@@ -324,22 +388,20 @@ class MemecoinDatabase:
             WHERE d.my_decision = 'TRADE' AND d.actual_exit_price IS NULL
             ORDER BY d.timestamp_decision DESC
         ''')
-        return [dict(row) for row in self.cursor.fetchall()]
+        return self._fetchall()
 
     def insert_or_update_performance(self, call_id: int, data: Dict[str, Any]) -> int:
         """Insert or update performance tracking data."""
         timestamp = datetime.now().isoformat()
 
-        # Check if record exists
-        self.cursor.execute(
+        self._execute(
             'SELECT tracking_id FROM performance_tracking WHERE call_id = ?',
             (call_id,)
         )
-        existing = self.cursor.fetchone()
+        existing = self._fetchone()
 
         if existing:
-            # Update existing record
-            self.cursor.execute('''
+            self._execute('''
                 UPDATE performance_tracking SET
                     last_updated = ?,
                     price_1h_later = COALESCE(?, price_1h_later),
@@ -373,17 +435,9 @@ class MemecoinDatabase:
                 data.get('min_price_since_entry'),
                 call_id
             ))
-            tracking_id = existing[0]
+            tracking_id = existing['tracking_id']
         else:
-            # Insert new record
-            self.cursor.execute('''
-                INSERT INTO performance_tracking (
-                    call_id, last_updated, price_1h_later, price_24h_later,
-                    price_7d_later, price_30d_later, current_mcap, current_liquidity,
-                    max_gain_observed, max_loss_observed, token_still_alive, rug_pull_occurred,
-                    checkpoint_type, max_price_since_entry, min_price_since_entry
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (
+            params = (
                 call_id, timestamp,
                 data.get('price_1h_later'),
                 data.get('price_24h_later'),
@@ -398,8 +452,30 @@ class MemecoinDatabase:
                 data.get('checkpoint_type'),
                 data.get('max_price_since_entry'),
                 data.get('min_price_since_entry')
-            ))
-            tracking_id = self.cursor.lastrowid
+            )
+
+            if self.db_type == 'postgres':
+                self._execute('''
+                    INSERT INTO performance_tracking (
+                        call_id, last_updated, price_1h_later, price_24h_later,
+                        price_7d_later, price_30d_later, current_mcap, current_liquidity,
+                        max_gain_observed, max_loss_observed, token_still_alive, rug_pull_occurred,
+                        checkpoint_type, max_price_since_entry, min_price_since_entry
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    RETURNING tracking_id
+                ''', params)
+                result = self._fetchone()
+                tracking_id = result['tracking_id']
+            else:
+                self._execute('''
+                    INSERT INTO performance_tracking (
+                        call_id, last_updated, price_1h_later, price_24h_later,
+                        price_7d_later, price_30d_later, current_mcap, current_liquidity,
+                        max_gain_observed, max_loss_observed, token_still_alive, rug_pull_occurred,
+                        checkpoint_type, max_price_since_entry, min_price_since_entry
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', params)
+                tracking_id = self.cursor.lastrowid
 
         self.conn.commit()
         return tracking_id
@@ -407,14 +483,9 @@ class MemecoinDatabase:
     def update_source_performance(self, source_name: str):
         """Calculate and update source performance statistics for an individual source."""
         timestamp = datetime.now().isoformat()
-
-        # Clean up the source name (strip whitespace)
         source_name = source_name.strip()
 
-        # Get all calls that include this source (handle comma-separated sources)
-        # Using LIKE with wildcards to match source in comma-separated lists
-        # Match patterns: "source", "source, ...", "..., source", "..., source, ..."
-        self.cursor.execute('''
+        self._execute('''
             SELECT
                 c.call_id,
                 d.my_decision,
@@ -431,19 +502,16 @@ class MemecoinDatabase:
                OR c.source LIKE ?
         ''', (source_name, f'{source_name},%', f'%, {source_name}', f'%, {source_name},%'))
 
-        calls = self.cursor.fetchall()
+        calls = self._fetchall()
         total_calls = len(calls)
         calls_traded = sum(1 for c in calls if c['my_decision'] == 'TRADE')
 
-        # Calculate average gain for tokens that actually pumped (max_gain > 0)
-        # Exclude tokens that only went down - they don't contribute to "Avg Gain"
         gains = [c['max_gain_observed'] for c in calls if c['max_gain_observed'] is not None and c['max_gain_observed'] > 0]
         avg_max_gain = sum(gains) / len(gains) if gains else 0.0
 
         rugs = sum(1 for c in calls if c['rug_pull_occurred'] == 'yes')
         rug_rate = rugs / total_calls if total_calls > 0 else 0.0
 
-        # Win rate: Only count TRADE decisions with exits where actual_exit_price > entry_price
         traded_calls = [c for c in calls if c['my_decision'] == 'TRADE']
         exited_trades = [c for c in traded_calls
                         if c['actual_exit_price'] is not None
@@ -452,11 +520,9 @@ class MemecoinDatabase:
         wins = sum(1 for c in exited_trades if c['actual_exit_price'] > c['entry_price'])
         win_rate = wins / len(exited_trades) if exited_trades else 0.0
 
-        # Calculate hit rate (% of calls that reached +50% at any point)
         hits = sum(1 for c in calls if c['max_gain_observed'] and c['max_gain_observed'] >= HIT_THRESHOLD)
         hit_rate = hits / total_calls if total_calls > 0 else 0.0
 
-        # Determine tier
         if avg_max_gain > 5.0 and win_rate > 0.6 and rug_rate < 0.1:
             tier = 'S'
         elif avg_max_gain > 3.0 and win_rate > 0.5 and rug_rate < 0.2:
@@ -466,42 +532,52 @@ class MemecoinDatabase:
         else:
             tier = 'C'
 
-        # Insert or update
-        self.cursor.execute('''
-            INSERT INTO source_performance
-            (source_name, total_calls, calls_traded, win_rate, avg_max_gain, rug_rate, hit_rate, tier, last_updated)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(source_name) DO UPDATE SET
-                total_calls = excluded.total_calls,
-                calls_traded = excluded.calls_traded,
-                win_rate = excluded.win_rate,
-                avg_max_gain = excluded.avg_max_gain,
-                rug_rate = excluded.rug_rate,
-                hit_rate = excluded.hit_rate,
-                tier = excluded.tier,
-                last_updated = excluded.last_updated
-        ''', (source_name, total_calls, calls_traded, win_rate, avg_max_gain, rug_rate, hit_rate, tier, timestamp))
+        if self.db_type == 'postgres':
+            self._execute('''
+                INSERT INTO source_performance
+                (source_name, total_calls, calls_traded, win_rate, avg_max_gain, rug_rate, hit_rate, tier, last_updated)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(source_name) DO UPDATE SET
+                    total_calls = EXCLUDED.total_calls,
+                    calls_traded = EXCLUDED.calls_traded,
+                    win_rate = EXCLUDED.win_rate,
+                    avg_max_gain = EXCLUDED.avg_max_gain,
+                    rug_rate = EXCLUDED.rug_rate,
+                    hit_rate = EXCLUDED.hit_rate,
+                    tier = EXCLUDED.tier,
+                    last_updated = EXCLUDED.last_updated
+            ''', (source_name, total_calls, calls_traded, win_rate, avg_max_gain, rug_rate, hit_rate, tier, timestamp))
+        else:
+            self._execute('''
+                INSERT INTO source_performance
+                (source_name, total_calls, calls_traded, win_rate, avg_max_gain, rug_rate, hit_rate, tier, last_updated)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(source_name) DO UPDATE SET
+                    total_calls = excluded.total_calls,
+                    calls_traded = excluded.calls_traded,
+                    win_rate = excluded.win_rate,
+                    avg_max_gain = excluded.avg_max_gain,
+                    rug_rate = excluded.rug_rate,
+                    hit_rate = excluded.hit_rate,
+                    tier = excluded.tier,
+                    last_updated = excluded.last_updated
+            ''', (source_name, total_calls, calls_traded, win_rate, avg_max_gain, rug_rate, hit_rate, tier, timestamp))
 
         self.conn.commit()
 
     def cleanup_combined_sources(self) -> int:
-        """
-        Remove combined source entries from source_performance table.
-        Returns number of entries removed.
-        """
-        # Get all source entries that contain commas (combined sources)
-        self.cursor.execute('''
+        """Remove combined source entries from source_performance table."""
+        self._execute('''
             SELECT source_name FROM source_performance
             WHERE source_name LIKE '%,%'
         ''')
-        combined_sources = [row['source_name'] for row in self.cursor.fetchall()]
+        combined_sources = [row['source_name'] for row in self._fetchall()]
 
         if not combined_sources:
             return 0
 
-        # Delete combined source entries
         for source in combined_sources:
-            self.cursor.execute('''
+            self._execute('''
                 DELETE FROM source_performance
                 WHERE source_name = ?
             ''', (source,))
@@ -511,42 +587,50 @@ class MemecoinDatabase:
 
     def get_all_sources(self) -> List[Dict[str, Any]]:
         """Get all source performance statistics."""
-        self.cursor.execute('''
+        self._execute('''
             SELECT * FROM source_performance
             ORDER BY tier ASC, avg_max_gain DESC
         ''')
-        return [dict(row) for row in self.cursor.fetchall()]
+        return self._fetchall()
 
     def get_call_by_address(self, contract_address: str) -> Optional[Dict[str, Any]]:
         """Get call information by contract address."""
-        self.cursor.execute(
+        self._execute(
             'SELECT * FROM calls_received WHERE contract_address = ?',
             (contract_address,)
         )
-        row = self.cursor.fetchone()
-        return dict(row) if row else None
-
-    # Tracked Wallets Methods
+        return self._fetchone()
 
     def insert_wallet(self, wallet_address: str, wallet_name: str, notes: str = "") -> int:
         """Insert a new tracked wallet."""
         timestamp = datetime.now().isoformat()
 
         try:
-            self.cursor.execute('''
-                INSERT INTO tracked_wallets
-                (wallet_address, wallet_name, notes, date_added)
-                VALUES (?, ?, ?, ?)
-            ''', (wallet_address, wallet_name, notes, timestamp))
-            self.conn.commit()
-            return self.cursor.lastrowid
-        except sqlite3.IntegrityError:
-            # Wallet already exists
+            if self.db_type == 'postgres':
+                self._execute('''
+                    INSERT INTO tracked_wallets
+                    (wallet_address, wallet_name, notes, date_added)
+                    VALUES (?, ?, ?, ?)
+                    RETURNING wallet_id
+                ''', (wallet_address, wallet_name, notes, timestamp))
+                result = self._fetchone()
+                self.conn.commit()
+                return result['wallet_id']
+            else:
+                self._execute('''
+                    INSERT INTO tracked_wallets
+                    (wallet_address, wallet_name, notes, date_added)
+                    VALUES (?, ?, ?, ?)
+                ''', (wallet_address, wallet_name, notes, timestamp))
+                self.conn.commit()
+                return self.cursor.lastrowid
+        except Exception:
+            self.conn.rollback()
             return -1
 
     def remove_wallet(self, wallet_address: str) -> bool:
         """Remove a tracked wallet."""
-        self.cursor.execute(
+        self._execute(
             'DELETE FROM tracked_wallets WHERE wallet_address = ?',
             (wallet_address,)
         )
@@ -555,25 +639,23 @@ class MemecoinDatabase:
 
     def get_all_wallets(self) -> List[Dict[str, Any]]:
         """Get all tracked wallets."""
-        self.cursor.execute('''
+        self._execute('''
             SELECT * FROM tracked_wallets
             ORDER BY tier ASC, avg_gain DESC
         ''')
-        return [dict(row) for row in self.cursor.fetchall()]
+        return self._fetchall()
 
     def get_wallet_by_address(self, wallet_address: str) -> Optional[Dict[str, Any]]:
         """Get a specific tracked wallet."""
-        self.cursor.execute(
+        self._execute(
             'SELECT * FROM tracked_wallets WHERE wallet_address = ?',
             (wallet_address,)
         )
-        row = self.cursor.fetchone()
-        return dict(row) if row else None
+        return self._fetchone()
 
     def update_wallet_performance(self, wallet_address: str, win_rate: float,
                                   avg_gain: float, total_buys: int):
         """Update wallet performance stats and calculate tier."""
-        # Calculate tier based on performance
         if win_rate > 0.7 and avg_gain > 400:
             tier = 'S'
         elif win_rate > 0.6 and avg_gain > 250:
@@ -583,7 +665,7 @@ class MemecoinDatabase:
         else:
             tier = 'C'
 
-        self.cursor.execute('''
+        self._execute('''
             UPDATE tracked_wallets SET
                 win_rate = ?,
                 avg_gain = ?,
@@ -620,40 +702,9 @@ class MemecoinDatabase:
 
 
 if __name__ == "__main__":
-    # Test database creation
-    print("Testing database creation...")
-    db = MemecoinDatabase("test_memecoin.db")
-    print("✅ Database created successfully!")
-    print(f"📁 Database file: {db.db_path}")
-
-    # Test inserting a call
-    call_id = db.insert_call(
-        contract_address="TEST123ABC",
-        token_symbol="TEST",
-        token_name="Test Token",
-        source="Test Source",
-        blockchain="Solana"
-    )
-    print(f"✅ Test call inserted with ID: {call_id}")
-
-    # Test inserting snapshot
-    snapshot_data = {
-        'liquidity_usd': 50000.0,
-        'holder_count': 100,
-        'top_holder_percent': 15.5,
-        'top_10_holders_percent': 45.0,
-        'token_age_hours': 2.5,
-        'market_cap': 100000.0,
-        'volume_24h': 25000.0,
-        'price_usd': 0.001,
-        'mint_authority_revoked': 1,
-        'freeze_authority_revoked': 1,
-        'rugcheck_score': 8.0,
-        'safety_score': 8.5,
-        'raw_data': {'test': 'data'}
-    }
-    snapshot_id = db.insert_snapshot(call_id, snapshot_data)
-    print(f"✅ Test snapshot inserted with ID: {snapshot_id}")
-
+    print("Testing database connection...")
+    db = MemecoinDatabase()
+    print(f"✅ Connected to: {db.db_type}")
+    print(f"📁 Database: {db.db_path}")
     db.close()
-    print("✅ All tests passed!")
+    print("✅ Connection test passed!")
