@@ -1,12 +1,24 @@
+import os
 import requests
 import time
 from datetime import datetime
 from typing import Dict, Any, Optional, List
 
+# Load environment variables from .env file
+try:
+    from dotenv import load_dotenv
+    load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env'))
+except ImportError:
+    pass
+
+# API Keys
+BIRDEYE_API_KEY = os.environ.get('BIRDEYE_API_KEY')
+
 
 class MemecoinDataFetcher:
-    """Fetches memecoin data from DexScreener and RugCheck APIs."""
+    """Fetches memecoin data from Birdeye (primary), DexScreener (backup), and RugCheck APIs."""
 
+    BIRDEYE_API = "https://public-api.birdeye.so/defi/token_overview"
     DEXSCREENER_API = "https://api.dexscreener.com/latest/dex/tokens/{address}"
     RUGCHECK_API = "https://api.rugcheck.xyz/v1/tokens/{address}/report"
 
@@ -15,8 +27,83 @@ class MemecoinDataFetcher:
         self.timeout = timeout
         self.retry_attempts = retry_attempts
 
+    def fetch_birdeye_data(self, address: str) -> Optional[Dict[str, Any]]:
+        """Fetch market data from Birdeye API (primary source)."""
+        if not BIRDEYE_API_KEY:
+            print("⚠️  Birdeye API key not configured, skipping...")
+            return None
+
+        headers = {
+            "X-API-KEY": BIRDEYE_API_KEY,
+            "x-chain": "solana"
+        }
+        params = {"address": address}
+
+        for attempt in range(self.retry_attempts + 1):
+            try:
+                response = requests.get(
+                    self.BIRDEYE_API,
+                    headers=headers,
+                    params=params,
+                    timeout=self.timeout
+                )
+                response.raise_for_status()
+                result = response.json()
+
+                if not result.get('success') or not result.get('data'):
+                    return None
+
+                data = result['data']
+
+                # Calculate token age from last trade time
+                last_trade_unix = data.get('lastTradeUnixTime')
+                token_age_hours = 0.0
+                if last_trade_unix:
+                    # Birdeye doesn't provide pair creation time, estimate from activity
+                    # For now we'll leave this as 0 and let DexScreener provide it as fallback
+                    pass
+
+                return {
+                    'price_usd': float(data.get('price', 0)),
+                    'liquidity_usd': float(data.get('liquidity', 0)),
+                    'main_pool_liquidity': float(data.get('liquidity', 0)),
+                    'total_liquidity': float(data.get('liquidity', 0)),
+                    'main_pool_dex': 'Birdeye',
+                    'volume_24h': float(data.get('v24hUSD', 0)),
+                    'market_cap': float(data.get('marketCap', 0)),
+                    'fdv': float(data.get('fdv', 0)),
+                    'price_change_5m': data.get('priceChange5mPercent'),
+                    'price_change_1h': data.get('priceChange1hPercent'),
+                    'price_change_24h': data.get('priceChange24hPercent'),
+                    'buy_count_24h': data.get('buy24h'),
+                    'sell_count_24h': data.get('sell24h'),
+                    'holder_count': data.get('holder'),
+                    'unique_wallets_24h': data.get('uniqueWallet24h'),
+                    'total_supply': data.get('totalSupply'),
+                    'circulating_supply': data.get('circulatingSupply'),
+                    'token_symbol': data.get('symbol'),
+                    'token_name': data.get('name'),
+                    'logo_uri': data.get('logoURI'),
+                    'raw_data': data
+                }
+
+            except requests.exceptions.Timeout:
+                if attempt < self.retry_attempts:
+                    time.sleep(1)
+                    continue
+                print(f"⚠️  Birdeye API timeout after {self.retry_attempts + 1} attempts")
+                return None
+            except requests.exceptions.RequestException as e:
+                print(f"⚠️  Birdeye API error: {e}")
+                return None
+            except (KeyError, ValueError) as e:
+                print(f"⚠️  Error parsing Birdeye data: {e}")
+                return None
+
+        return None
+
     def fetch_dexscreener_data(self, address: str) -> Optional[Dict[str, Any]]:
-        """Fetch market data from DexScreener API."""
+        """Fetch market data from DexScreener API (backup source)."""
         url = self.DEXSCREENER_API.format(address=address)
 
         for attempt in range(self.retry_attempts + 1):
@@ -48,7 +135,7 @@ class MemecoinDataFetcher:
 
                 return {
                     'price_usd': price_usd,
-                    'liquidity_usd': liquidity_usd,  # Backward compatibility
+                    'liquidity_usd': liquidity_usd,
                     'main_pool_liquidity': main_pool_liquidity,
                     'total_liquidity': total_liquidity,
                     'main_pool_dex': main_pool_dex,
@@ -58,10 +145,12 @@ class MemecoinDataFetcher:
                     'price_change_1h': float(price_change.get('h1', 0)) if price_change.get('h1') else None,
                     'price_change_24h': float(price_change.get('h24', 0)) if price_change.get('h24') else None,
                     'pair_created_at': main_pair.get('pairCreatedAt'),
-                    'txns_24h_buys': main_pair.get('txns', {}).get('h24', {}).get('buys', 0),
-                    'txns_24h_sells': main_pair.get('txns', {}).get('h24', {}).get('sells', 0),
+                    'buy_count_24h': main_pair.get('txns', {}).get('h24', {}).get('buys', 0),
+                    'sell_count_24h': main_pair.get('txns', {}).get('h24', {}).get('sells', 0),
                     'dex': main_pair.get('dexId'),
                     'pair_address': main_pair.get('pairAddress'),
+                    'token_symbol': main_pair.get('baseToken', {}).get('symbol'),
+                    'token_name': main_pair.get('baseToken', {}).get('name'),
                     'raw_data': main_pair
                 }
 
@@ -249,47 +338,63 @@ class MemecoinDataFetcher:
         return matches
 
     def fetch_all_data(self, address: str, tracked_wallets: List[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
-        """Fetch and combine data from all sources."""
-        print(f"🔍 Fetching DexScreener data...")
-        dex_data = self.fetch_dexscreener_data(address)
+        """Fetch and combine data from all sources. Uses Birdeye as primary, DexScreener as backup."""
 
-        if not dex_data:
-            print("❌ Failed to fetch DexScreener data or token not found")
+        # Try Birdeye first (primary source)
+        print(f"🔍 Fetching Birdeye data...")
+        market_data = self.fetch_birdeye_data(address)
+        data_source = "Birdeye"
+
+        # Fall back to DexScreener if Birdeye fails
+        if not market_data:
+            print(f"⚠️  Birdeye failed, falling back to DexScreener...")
+            market_data = self.fetch_dexscreener_data(address)
+            data_source = "DexScreener"
+
+        if not market_data:
+            print("❌ Failed to fetch market data from any source")
             return None
 
+        print(f"✅ Market data from {data_source}")
+
+        # Get security data from RugCheck
         print(f"🔍 Fetching RugCheck data...")
         rug_data = self.fetch_rugcheck_data(address)
 
         # Combine all data
-        combined_data = {}
+        combined_data = {
+            'data_source': data_source,
+            'liquidity_usd': market_data.get('liquidity_usd', 0),
+            'main_pool_liquidity': market_data.get('main_pool_liquidity'),
+            'total_liquidity': market_data.get('total_liquidity'),
+            'main_pool_dex': market_data.get('main_pool_dex'),
+            'volume_24h': market_data.get('volume_24h', 0),
+            'price_usd': market_data.get('price_usd', 0),
+            'market_cap': market_data.get('market_cap', 0),
+            'price_change_5m': market_data.get('price_change_5m'),
+            'price_change_1h': market_data.get('price_change_1h'),
+            'price_change_24h': market_data.get('price_change_24h'),
+            'buy_count_24h': market_data.get('buy_count_24h'),
+            'sell_count_24h': market_data.get('sell_count_24h'),
+            'token_symbol': market_data.get('token_symbol'),
+            'token_name': market_data.get('token_name'),
+            # ATH/ATL and liquidity locked data not available in basic APIs
+            'all_time_high': None,
+            'all_time_low': None,
+            'price_vs_atl_percent': None,
+            'liquidity_locked_percent': None,
+        }
 
-        # DexScreener data
-        if dex_data:
-            combined_data.update({
-                'liquidity_usd': dex_data['liquidity_usd'],
-                'main_pool_liquidity': dex_data.get('main_pool_liquidity'),
-                'total_liquidity': dex_data.get('total_liquidity'),
-                'main_pool_dex': dex_data.get('main_pool_dex'),
-                'volume_24h': dex_data['volume_24h'],
-                'price_usd': dex_data['price_usd'],
-                'market_cap': dex_data['market_cap'],
-                'token_age_hours': self.calculate_token_age_hours(dex_data.get('pair_created_at')),
-                'price_change_5m': dex_data.get('price_change_5m'),
-                'price_change_1h': dex_data.get('price_change_1h'),
-                'price_change_24h': dex_data.get('price_change_24h'),
-                'buy_count_24h': dex_data.get('txns_24h_buys'),
-                'sell_count_24h': dex_data.get('txns_24h_sells'),
-                # ATH/ATL and liquidity locked data not available in basic API
-                'all_time_high': None,
-                'all_time_low': None,
-                'price_vs_atl_percent': None,
-                'liquidity_locked_percent': None,
-            })
+        # Token age from DexScreener (Birdeye doesn't provide creation time)
+        if market_data.get('pair_created_at'):
+            combined_data['token_age_hours'] = self.calculate_token_age_hours(market_data.get('pair_created_at'))
+        else:
+            combined_data['token_age_hours'] = 0.0
 
-        # RugCheck data
+        # RugCheck security data
         if rug_data:
             combined_data.update({
-                'holder_count': rug_data['holder_count'],
+                'holder_count': rug_data.get('holder_count') or market_data.get('holder_count'),
                 'top_holder_percent': rug_data['top_holder_percent'],
                 'top_10_holders_percent': rug_data['top_10_holders_percent'],
                 'mint_authority_revoked': 1 if rug_data['mint_authority_revoked'] else 0,
@@ -297,9 +402,9 @@ class MemecoinDataFetcher:
                 'rugcheck_score': rug_data['rugcheck_score'],
             })
         else:
-            # Set defaults if RugCheck fails
+            # Set defaults if RugCheck fails - use Birdeye holder count if available
             combined_data.update({
-                'holder_count': None,
+                'holder_count': market_data.get('holder_count'),
                 'top_holder_percent': None,
                 'top_10_holders_percent': None,
                 'mint_authority_revoked': None,
@@ -317,9 +422,9 @@ class MemecoinDataFetcher:
             # Calculate smart money bonus for safety score
             wallet_count = len(smart_money_wallets)
             if wallet_count >= 3:
-                smart_money_bonus = 2.0  # 20 points converted to 2.0 on 0-10 scale
+                smart_money_bonus = 2.0
             elif wallet_count >= 1:
-                smart_money_bonus = 1.0  # 10 points converted to 1.0 on 0-10 scale
+                smart_money_bonus = 1.0
 
         combined_data['smart_money_wallets'] = smart_money_wallets
         combined_data['smart_money_count'] = len(smart_money_wallets)
@@ -336,7 +441,7 @@ class MemecoinDataFetcher:
 
         # Store raw data
         combined_data['raw_data'] = {
-            'dexscreener': dex_data.get('raw_data', {}),
+            'birdeye' if data_source == 'Birdeye' else 'dexscreener': market_data.get('raw_data', {}),
             'rugcheck': rug_data.get('raw_data', {}) if rug_data else {}
         }
 
@@ -354,13 +459,21 @@ if __name__ == "__main__":
     data = fetcher.fetch_all_data(address)
 
     if data:
-        print("\n✅ Data fetched successfully!")
+        print(f"\n✅ Data fetched successfully from {data.get('data_source', 'Unknown')}!")
         print("\n📊 MARKET DATA:")
         print(f"   Price: ${data.get('price_usd', 0):.8f}")
         print(f"   Liquidity: ${data.get('liquidity_usd', 0):,.2f}")
         print(f"   24h Volume: ${data.get('volume_24h', 0):,.2f}")
         print(f"   Market Cap: ${data.get('market_cap', 0):,.2f}")
         print(f"   Token Age: {data.get('token_age_hours', 0):.1f} hours")
+
+        print("\n📈 PRICE CHANGES:")
+        if data.get('price_change_5m') is not None:
+            print(f"   5m: {data['price_change_5m']:+.2f}%")
+        if data.get('price_change_1h') is not None:
+            print(f"   1h: {data['price_change_1h']:+.2f}%")
+        if data.get('price_change_24h') is not None:
+            print(f"   24h: {data['price_change_24h']:+.2f}%")
 
         print("\n🔒 SECURITY DATA:")
         print(f"   Holders: {data.get('holder_count', 'N/A')}")

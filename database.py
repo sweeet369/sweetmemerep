@@ -3,6 +3,13 @@ import os
 from datetime import datetime
 from typing import Optional, Dict, Any, List
 
+# Load environment variables from .env file (if it exists)
+try:
+    from dotenv import load_dotenv
+    load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env'))
+except ImportError:
+    pass  # dotenv not installed, will use environment variables directly
+
 
 # Constants for source performance calculations
 HIT_THRESHOLD = 50.0  # Minimum gain % to count as hit
