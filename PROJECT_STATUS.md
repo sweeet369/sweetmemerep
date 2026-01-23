@@ -1,6 +1,6 @@
 # Project Status - Memecoin Trading Analyzer
 
-**Last Updated:** January 21, 2026
+**Last Updated:** January 23, 2026
 
 ---
 
@@ -8,127 +8,111 @@
 Your database password was exposed in a conversation. When you have time:
 1. Go to Supabase → Settings → Database → Reset database password
 2. Update GitHub secret (Settings → Secrets → Actions → DATABASE_URL) with new password
-3. Delete this reminder once done
+3. Update your local `.env` file with new password
+4. Delete this reminder once done
 
 ---
 
-## What Was Accomplished Today
+## What's Working Now
 
-### Cloud Setup (COMPLETED)
-1. **Supabase Database** - Set up cloud PostgreSQL database
-   - Project: `ooccknyalgowtmfvjpij`
-   - Tables created: calls_received, initial_snapshot, my_decisions, performance_tracking, source_performance, tracked_wallets
+### Local App
+- **Analyzer** (`python3 analyzer.py`) - Fully working
+- **Uses Supabase** - Local and cloud now share the same database
+- **Uses Birdeye API** - More accurate data than DexScreener
+- **`.env` file** - Stores your secrets locally (not committed to git)
 
-2. **GitHub Actions Tracker** - Runs every 5 minutes automatically
-   - Workflow file: `.github/workflows/tracker.yml`
-   - Uses `DATABASE_URL` secret (Transaction Pooler connection)
-   - Connection string format: `postgresql://postgres.ooccknyalgowtmfvjpij:PASSWORD@aws-1-eu-central-1.pooler.supabase.com:6543/postgres`
-
-3. **Code Updates**
-   - `database.py` - Now supports both SQLite (local) and PostgreSQL (Supabase)
-   - Uses `DATABASE_URL` environment variable to switch between them
-   - `requirements.txt` - Added `psycopg2-binary`
-
-4. **Files Created**
-   - `supabase_setup.sql` - SQL to create tables in Supabase
-   - `migrate_to_supabase.py` - Script to migrate local data to cloud
-   - `.github/workflows/tracker.yml` - GitHub Actions workflow
+### Cloud Tracker (GitHub Actions)
+- **Runs every 5 minutes** automatically
+- **Uses Supabase** - Same database as local
+- **Uses Birdeye API** - More accurate data
+- **Secrets configured:**
+  - `DATABASE_URL` - Supabase connection
+  - `BIRDEYE_API_KEY` - Birdeye API access
 
 ---
 
-## Current Architecture
+## Data Sources
 
-```
-LOCAL (your Mac):
-  analyzer.py → SQLite database (memecoin_analyzer.db)
-
-CLOUD (GitHub Actions + Supabase):
-  performance_tracker.py → Supabase PostgreSQL (runs every 5 min)
-```
-
-**Problem:** Local and cloud databases are separate! Tokens analyzed locally won't be tracked by the cloud tracker.
+| Source | Purpose | Status |
+|--------|---------|--------|
+| **Birdeye** (Primary) | Price, liquidity, volume, market cap, holders | ✅ Working |
+| **DexScreener** (Backup) | Fallback if Birdeye fails, token age | ✅ Working |
+| **RugCheck** | Security (mint/freeze authority, top holders) | ✅ Working |
 
 ---
 
-## Known Issues To Fix
+## Tracking Logic
 
-### High Priority
-1. **Database Sync Issue** - Local app uses SQLite, cloud uses Supabase
-   - **Fix needed:** Update local app to also use Supabase (set DATABASE_URL locally)
-   - Or: Create sync mechanism between local and cloud
-
-2. **Supabase Password Exposed** - Password was shared in conversation
-   - **Fix needed:** Reset password in Supabase → Settings → Database
-   - Then update GitHub secret with new password
-
-### Medium Priority
-3. **No Web Interface** - Can only view data via local CLI app
-   - Could use Supabase dashboard to view tables directly
-   - Or build a simple web dashboard later
-
-4. **Source Stats Empty** - Fresh Supabase database has no historical data
-   - Will populate as you analyze new tokens
-
-### Low Priority / Future Enhancements
-5. **5-minute tracking interval** - GitHub Actions can sometimes have delays
-6. **No notifications** - No alerts when tokens pump or rug
+| Decision | When tracking STARTS | When tracking STOPS |
+|----------|---------------------|---------------------|
+| **TRADE** | When you choose TRADE | When you record exit |
+| **WATCH** | When you choose WATCH | When you remove from watchlist |
+| **PASS** | Never tracked | N/A |
 
 ---
 
-## How To Continue Development
-
-### To use local app with cloud database:
-```bash
-export DATABASE_URL='postgresql://postgres.ooccknyalgowtmfvjpij:NEW_PASSWORD@aws-1-eu-central-1.pooler.supabase.com:6543/postgres'
-python3 analyzer.py
-```
-
-### To check GitHub Actions:
-- Go to: https://github.com/sweeet369/sweetmemerep/actions
-- Look for "Performance Tracker" workflow runs
-
-### To view data in Supabase:
-- Go to: https://supabase.com/dashboard
-- Select your project → Table Editor
-
-### To reset Supabase password:
-1. Supabase Dashboard → Settings → Database
-2. Click "Reset database password"
-3. Update GitHub secret: Settings → Secrets → Actions → DATABASE_URL
-
----
-
-## File Structure
+## Files & Structure
 
 ```
 sweetmemerep-1/
-├── analyzer.py           # Main CLI app (run this)
-├── database.py           # Database layer (SQLite + PostgreSQL)
-├── data_fetcher.py       # API calls to DexScreener + RugCheck
-├── performance_tracker.py # Auto-updates token prices
+├── analyzer.py           # Main CLI app
+├── database.py           # Database (SQLite + PostgreSQL support)
+├── data_fetcher.py       # Birdeye + DexScreener + RugCheck APIs
+├── performance_tracker.py # Auto-tracks prices (runs in cloud)
+├── .env                  # Your local secrets (NOT in git)
+├── .env.example          # Template for .env
 ├── requirements.txt      # Python dependencies
-├── supabase_setup.sql    # SQL for creating tables
-├── migrate_to_supabase.py # Migration script
-├── .github/
-│   └── workflows/
-│       └── tracker.yml   # GitHub Actions config
-└── CLAUDE.md             # Instructions for Claude
+├── .github/workflows/
+│   └── tracker.yml       # GitHub Actions config
+└── PROJECT_STATUS.md     # This file
 ```
 
 ---
 
-## Quick Commands
+## How to Run Locally
 
 ```bash
+# Navigate to project
+cd ~/Desktop/sweetmemerep-1
+
 # Run the main analyzer
 python3 analyzer.py
 
-# Run tracker manually (local)
+# Run tracker manually (optional - cloud does this automatically)
 python3 performance_tracker.py
-
-# Set cloud database for local use
-export DATABASE_URL='postgresql://postgres.ooccknyalgowtmfvjpij:PASSWORD@aws-1-eu-central-1.pooler.supabase.com:6543/postgres'
 ```
+
+---
+
+## How to Monitor Cloud Tracker
+
+1. Go to: https://github.com/sweeet369/sweetmemerep/actions
+2. Look for "Performance Tracker" runs
+3. Green checkmark = success
+4. Click on a run to see details/logs
+
+---
+
+## How to View Data in Supabase
+
+1. Go to: https://supabase.com/dashboard
+2. Select your project
+3. Click "Table Editor" in left sidebar
+4. Browse your tables: calls_received, my_decisions, etc.
+
+---
+
+## Secrets Reference
+
+### Local (.env file)
+```
+DATABASE_URL=postgresql://postgres.ooccknyalgowtmfvjpij:PASSWORD@aws-1-eu-central-1.pooler.supabase.com:6543/postgres
+BIRDEYE_API_KEY=5bdef8c10aaa42dd8c98c25ea38b9836
+```
+
+### GitHub Secrets
+- `DATABASE_URL` - Same as above
+- `BIRDEYE_API_KEY` - Same as above
 
 ---
 
