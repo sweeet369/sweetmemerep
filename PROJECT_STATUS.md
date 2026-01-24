@@ -104,15 +104,17 @@ python3 performance_tracker.py
 
 ## Secrets Reference
 
+**IMPORTANT:** Never put actual secrets in this file! Use the `.env` file (which is not committed to git).
+
 ### Local (.env file)
-```
-DATABASE_URL=postgresql://postgres.ooccknyalgowtmfvjpij:PASSWORD@aws-1-eu-central-1.pooler.supabase.com:6543/postgres
-BIRDEYE_API_KEY=5bdef8c10aaa42dd8c98c25ea38b9836
-```
+See `.env.example` for the format. Your actual `.env` file should contain:
+- `DATABASE_URL` - Your Supabase connection string
+- `BIRDEYE_API_KEY` - Your Birdeye API key
 
 ### GitHub Secrets
-- `DATABASE_URL` - Same as above
-- `BIRDEYE_API_KEY` - Same as above
+Configure these in: GitHub → Settings → Secrets → Actions
+- `DATABASE_URL` - Same as your local .env
+- `BIRDEYE_API_KEY` - Same as your local .env
 
 ---
 
