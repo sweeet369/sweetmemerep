@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import logging
 import os
 from datetime import datetime
 from typing import Optional, Dict, Any, List, TYPE_CHECKING
@@ -10,12 +9,8 @@ if TYPE_CHECKING:
     from psycopg2.extensions import connection as PgConnection, cursor as PgCursor
     from sqlite3 import Connection as SqliteConnection, Cursor as SqliteCursor
 
-# Setup logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
+# Import structured logging
+from app_logger import db_logger, log_db_operation
 
 # Load environment variables from .env file (if it exists)
 try:
@@ -48,7 +43,7 @@ def get_pg_pool():
             maxconn=10,
             dsn=DATABASE_URL
         )
-        logger.info("PostgreSQL connection pool initialized (min=2, max=10)")
+        db_logger.info("PostgreSQL connection pool initialized (min=2, max=10)")
     return _pg_connection_pool
 
 
@@ -94,7 +89,7 @@ class MemecoinDatabase:
                 if pool:
                     self.conn = pool.getconn()
                     self._using_pool = True
-                    logger.debug("Got connection from pool")
+                    db_logger.debug("Got connection from pool")
                 else:
                     import psycopg2
                     self.conn = psycopg2.connect(DATABASE_URL)
@@ -285,7 +280,7 @@ class MemecoinDatabase:
         self.cursor.execute('CREATE INDEX IF NOT EXISTS idx_tracked_wallets_address ON tracked_wallets(wallet_address)')
 
         self.conn.commit()
-        logger.info("SQLite tables and indexes created/verified")
+        db_logger.info("SQLite tables and indexes created/verified")
 
     def _execute(self, query: str, params: tuple | None = None) -> None:
         """Execute a query with proper placeholder substitution."""
@@ -344,7 +339,7 @@ class MemecoinDatabase:
                 if result:
                     return result['call_id']
             # Log unexpected errors
-            logger.error(f"Failed to insert call for {contract_address}: {e}")
+            db_logger.error(f"Failed to insert call for {contract_address}: {e}")
             return -1
 
     def insert_snapshot(self, call_id: int, data: Dict[str, Any]) -> int:
@@ -695,7 +690,7 @@ class MemecoinDatabase:
         )
 
         self.conn.commit()
-        logger.info(f"Cleaned up {len(combined_sources)} combined source entries")
+        db_logger.info(f"Cleaned up {len(combined_sources)} combined source entries")
         return len(combined_sources)
 
     def get_all_sources(self) -> List[Dict[str, Any]]:
@@ -741,9 +736,9 @@ class MemecoinDatabase:
             self.conn.rollback()
             error_str = str(e).lower()
             if 'unique' in error_str or 'duplicate' in error_str:
-                logger.warning(f"Wallet {wallet_address} already exists")
+                db_logger.warning(f"Wallet {wallet_address} already exists")
             else:
-                logger.error(f"Failed to insert wallet {wallet_address}: {e}")
+                db_logger.error(f"Failed to insert wallet {wallet_address}: {e}")
             return -1
 
     def remove_wallet(self, wallet_address: str) -> bool:
@@ -812,7 +807,7 @@ class MemecoinDatabase:
             pool = get_pg_pool()
             if pool:
                 pool.putconn(self.conn)
-                logger.debug("Connection returned to pool")
+                db_logger.debug("Connection returned to pool")
                 return
         self.conn.close()
 

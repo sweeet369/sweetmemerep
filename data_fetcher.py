@@ -11,6 +11,9 @@ try:
 except ImportError:
     pass
 
+# Import structured logging
+from app_logger import api_logger, log_api_call
+
 # API Keys
 BIRDEYE_API_KEY = os.environ.get('BIRDEYE_API_KEY')
 
@@ -30,7 +33,7 @@ class MemecoinDataFetcher:
     def fetch_birdeye_data(self, address: str) -> Optional[Dict[str, Any]]:
         """Fetch market data from Birdeye API (primary source)."""
         if not BIRDEYE_API_KEY:
-            print("⚠️  Birdeye API key not configured, skipping...")
+            api_logger.warning("Birdeye API key not configured", token=address[:8])
             return None
 
         headers = {
@@ -40,64 +43,62 @@ class MemecoinDataFetcher:
         params = {"address": address}
 
         for attempt in range(self.retry_attempts + 1):
-            try:
-                response = requests.get(
-                    self.BIRDEYE_API,
-                    headers=headers,
-                    params=params,
-                    timeout=self.timeout
-                )
-                response.raise_for_status()
-                result = response.json()
+            with log_api_call(api_logger, self.BIRDEYE_API, 'GET', token=address[:8], attempt=attempt+1) as ctx:
+                try:
+                    response = requests.get(
+                        self.BIRDEYE_API,
+                        headers=headers,
+                        params=params,
+                        timeout=self.timeout
+                    )
+                    ctx['status_code'] = response.status_code
+                    response.raise_for_status()
+                    result = response.json()
 
-                if not result.get('success') or not result.get('data'):
+                    if not result.get('success') or not result.get('data'):
+                        ctx['success'] = True  # API worked, just no data
+                        api_logger.debug("Birdeye returned no data", token=address[:8])
+                        return None
+
+                    data = result['data']
+                    ctx['has_data'] = True
+
+                    return {
+                        'price_usd': float(data.get('price', 0)),
+                        'liquidity_usd': float(data.get('liquidity', 0)),
+                        'main_pool_liquidity': float(data.get('liquidity', 0)),
+                        'total_liquidity': float(data.get('liquidity', 0)),
+                        'main_pool_dex': 'Birdeye',
+                        'volume_24h': float(data.get('v24hUSD', 0)),
+                        'market_cap': float(data.get('marketCap', 0)),
+                        'fdv': float(data.get('fdv', 0)),
+                        'price_change_5m': data.get('priceChange5mPercent'),
+                        'price_change_1h': data.get('priceChange1hPercent'),
+                        'price_change_24h': data.get('priceChange24hPercent'),
+                        'buy_count_24h': data.get('buy24h'),
+                        'sell_count_24h': data.get('sell24h'),
+                        'holder_count': data.get('holder'),
+                        'unique_wallets_24h': data.get('uniqueWallet24h'),
+                        'total_supply': data.get('totalSupply'),
+                        'circulating_supply': data.get('circulatingSupply'),
+                        'token_symbol': data.get('symbol'),
+                        'token_name': data.get('name'),
+                        'logo_uri': data.get('logoURI'),
+                        'raw_data': data
+                    }
+
+                except requests.exceptions.Timeout:
+                    if attempt < self.retry_attempts:
+                        api_logger.warning("Birdeye timeout, retrying", token=address[:8], attempt=attempt+1)
+                        time.sleep(1)
+                        continue
+                    api_logger.error("Birdeye timeout after all retries", token=address[:8], attempts=self.retry_attempts+1)
                     return None
-
-                data = result['data']
-
-                # Calculate token age from last trade time
-                last_trade_unix = data.get('lastTradeUnixTime')
-                token_age_hours = 0.0
-                if last_trade_unix:
-                    # Birdeye doesn't provide pair creation time, estimate from activity
-                    # For now we'll leave this as 0 and let DexScreener provide it as fallback
-                    pass
-
-                return {
-                    'price_usd': float(data.get('price', 0)),
-                    'liquidity_usd': float(data.get('liquidity', 0)),
-                    'main_pool_liquidity': float(data.get('liquidity', 0)),
-                    'total_liquidity': float(data.get('liquidity', 0)),
-                    'main_pool_dex': 'Birdeye',
-                    'volume_24h': float(data.get('v24hUSD', 0)),
-                    'market_cap': float(data.get('marketCap', 0)),
-                    'fdv': float(data.get('fdv', 0)),
-                    'price_change_5m': data.get('priceChange5mPercent'),
-                    'price_change_1h': data.get('priceChange1hPercent'),
-                    'price_change_24h': data.get('priceChange24hPercent'),
-                    'buy_count_24h': data.get('buy24h'),
-                    'sell_count_24h': data.get('sell24h'),
-                    'holder_count': data.get('holder'),
-                    'unique_wallets_24h': data.get('uniqueWallet24h'),
-                    'total_supply': data.get('totalSupply'),
-                    'circulating_supply': data.get('circulatingSupply'),
-                    'token_symbol': data.get('symbol'),
-                    'token_name': data.get('name'),
-                    'logo_uri': data.get('logoURI'),
-                    'raw_data': data
-                }
-
-            except requests.exceptions.Timeout:
-                if attempt < self.retry_attempts:
-                    time.sleep(1)
-                    continue
-                print(f"⚠️  Birdeye API timeout after {self.retry_attempts + 1} attempts")
-                return None
-            except requests.exceptions.RequestException as e:
-                print(f"⚠️  Birdeye API error: {e}")
-                return None
-            except (KeyError, ValueError) as e:
-                print(f"⚠️  Error parsing Birdeye data: {e}")
+                except requests.exceptions.RequestException as e:
+                    api_logger.error("Birdeye request failed", token=address[:8], error=str(e))
+                    return None
+                except (KeyError, ValueError) as e:
+                    api_logger.error("Birdeye data parsing failed", token=address[:8], error=str(e))
                 return None
 
         return None
@@ -107,65 +108,71 @@ class MemecoinDataFetcher:
         url = self.DEXSCREENER_API.format(address=address)
 
         for attempt in range(self.retry_attempts + 1):
-            try:
-                response = requests.get(url, timeout=self.timeout)
-                response.raise_for_status()
-                data = response.json()
+            with log_api_call(api_logger, url, 'GET', token=address[:8], attempt=attempt+1) as ctx:
+                try:
+                    response = requests.get(url, timeout=self.timeout)
+                    ctx['status_code'] = response.status_code
+                    response.raise_for_status()
+                    data = response.json()
 
-                if not data.get('pairs') or len(data['pairs']) == 0:
+                    if not data.get('pairs') or len(data['pairs']) == 0:
+                        ctx['success'] = True
+                        api_logger.debug("DexScreener returned no pairs", token=address[:8])
+                        return None
+
+                    # Get all pairs and sort by liquidity
+                    pairs = sorted(data['pairs'], key=lambda x: x.get('liquidity', {}).get('usd', 0), reverse=True)
+                    main_pair = pairs[0]
+                    ctx['pairs_count'] = len(pairs)
+
+                    # Calculate liquidity across all pools
+                    main_pool_liquidity = float(main_pair.get('liquidity', {}).get('usd', 0))
+                    total_liquidity = sum(float(pair.get('liquidity', {}).get('usd', 0)) for pair in pairs)
+                    main_pool_dex = main_pair.get('dexId', 'Unknown')
+
+                    # Extract price changes for different timeframes
+                    price_change = main_pair.get('priceChange', {})
+
+                    # Extract liquidity info (backward compatibility - use main pool)
+                    liquidity_usd = main_pool_liquidity
+
+                    # Try to get ATH/ATL if available (not always present)
+                    price_usd = float(main_pair.get('priceUsd', 0))
+
+                    return {
+                        'price_usd': price_usd,
+                        'liquidity_usd': liquidity_usd,
+                        'main_pool_liquidity': main_pool_liquidity,
+                        'total_liquidity': total_liquidity,
+                        'main_pool_dex': main_pool_dex,
+                        'volume_24h': float(main_pair.get('volume', {}).get('h24', 0)),
+                        'market_cap': float(main_pair.get('fdv', 0)),
+                        'price_change_5m': float(price_change.get('m5', 0)) if price_change.get('m5') else None,
+                        'price_change_1h': float(price_change.get('h1', 0)) if price_change.get('h1') else None,
+                        'price_change_24h': float(price_change.get('h24', 0)) if price_change.get('h24') else None,
+                        'pair_created_at': main_pair.get('pairCreatedAt'),
+                        'buy_count_24h': main_pair.get('txns', {}).get('h24', {}).get('buys', 0),
+                        'sell_count_24h': main_pair.get('txns', {}).get('h24', {}).get('sells', 0),
+                        'dex': main_pair.get('dexId'),
+                        'pair_address': main_pair.get('pairAddress'),
+                        'token_symbol': main_pair.get('baseToken', {}).get('symbol'),
+                        'token_name': main_pair.get('baseToken', {}).get('name'),
+                        'raw_data': main_pair
+                    }
+
+                except requests.exceptions.Timeout:
+                    if attempt < self.retry_attempts:
+                        api_logger.warning("DexScreener timeout, retrying", token=address[:8], attempt=attempt+1)
+                        time.sleep(1)
+                        continue
+                    api_logger.error("DexScreener timeout after all retries", token=address[:8], attempts=self.retry_attempts+1)
                     return None
-
-                # Get all pairs and sort by liquidity
-                pairs = sorted(data['pairs'], key=lambda x: x.get('liquidity', {}).get('usd', 0), reverse=True)
-                main_pair = pairs[0]
-
-                # Calculate liquidity across all pools
-                main_pool_liquidity = float(main_pair.get('liquidity', {}).get('usd', 0))
-                total_liquidity = sum(float(pair.get('liquidity', {}).get('usd', 0)) for pair in pairs)
-                main_pool_dex = main_pair.get('dexId', 'Unknown')
-
-                # Extract price changes for different timeframes
-                price_change = main_pair.get('priceChange', {})
-
-                # Extract liquidity info (backward compatibility - use main pool)
-                liquidity_usd = main_pool_liquidity
-
-                # Try to get ATH/ATL if available (not always present)
-                price_usd = float(main_pair.get('priceUsd', 0))
-
-                return {
-                    'price_usd': price_usd,
-                    'liquidity_usd': liquidity_usd,
-                    'main_pool_liquidity': main_pool_liquidity,
-                    'total_liquidity': total_liquidity,
-                    'main_pool_dex': main_pool_dex,
-                    'volume_24h': float(main_pair.get('volume', {}).get('h24', 0)),
-                    'market_cap': float(main_pair.get('fdv', 0)),
-                    'price_change_5m': float(price_change.get('m5', 0)) if price_change.get('m5') else None,
-                    'price_change_1h': float(price_change.get('h1', 0)) if price_change.get('h1') else None,
-                    'price_change_24h': float(price_change.get('h24', 0)) if price_change.get('h24') else None,
-                    'pair_created_at': main_pair.get('pairCreatedAt'),
-                    'buy_count_24h': main_pair.get('txns', {}).get('h24', {}).get('buys', 0),
-                    'sell_count_24h': main_pair.get('txns', {}).get('h24', {}).get('sells', 0),
-                    'dex': main_pair.get('dexId'),
-                    'pair_address': main_pair.get('pairAddress'),
-                    'token_symbol': main_pair.get('baseToken', {}).get('symbol'),
-                    'token_name': main_pair.get('baseToken', {}).get('name'),
-                    'raw_data': main_pair
-                }
-
-            except requests.exceptions.Timeout:
-                if attempt < self.retry_attempts:
-                    time.sleep(1)
-                    continue
-                print(f"⚠️  DexScreener API timeout after {self.retry_attempts + 1} attempts")
-                return None
-            except requests.exceptions.RequestException as e:
-                print(f"⚠️  DexScreener API error: {e}")
-                return None
-            except (KeyError, ValueError) as e:
-                print(f"⚠️  Error parsing DexScreener data: {e}")
-                return None
+                except requests.exceptions.RequestException as e:
+                    api_logger.error("DexScreener request failed", token=address[:8], error=str(e))
+                    return None
+                except (KeyError, ValueError) as e:
+                    api_logger.error("DexScreener data parsing failed", token=address[:8], error=str(e))
+                    return None
 
         return None
 
@@ -174,48 +181,52 @@ class MemecoinDataFetcher:
         url = self.RUGCHECK_API.format(address=address)
 
         for attempt in range(self.retry_attempts + 1):
-            try:
-                response = requests.get(url, timeout=self.timeout)
-                response.raise_for_status()
-                data = response.json()
+            with log_api_call(api_logger, url, 'GET', token=address[:8], attempt=attempt+1) as ctx:
+                try:
+                    response = requests.get(url, timeout=self.timeout)
+                    ctx['status_code'] = response.status_code
+                    response.raise_for_status()
+                    data = response.json()
 
-                # Parse mint and freeze authority
-                mint_revoked = data.get('mintAuthority') is None or data.get('mintAuthority') == 'null'
-                freeze_revoked = data.get('freezeAuthority') is None or data.get('freezeAuthority') == 'null'
+                    # Parse mint and freeze authority
+                    mint_revoked = data.get('mintAuthority') is None or data.get('mintAuthority') == 'null'
+                    freeze_revoked = data.get('freezeAuthority') is None or data.get('freezeAuthority') == 'null'
 
-                # Parse top holders
-                top_holders = data.get('topHolders') or []
-                top_holder_percent = float(top_holders[0].get('pct', 0)) if top_holders else 0.0
-                top_10_percent = sum(float(h.get('pct', 0)) for h in top_holders[:10]) if top_holders else 0.0
+                    # Parse top holders
+                    top_holders = data.get('topHolders') or []
+                    top_holder_percent = float(top_holders[0].get('pct', 0)) if top_holders else 0.0
+                    top_10_percent = sum(float(h.get('pct', 0)) for h in top_holders[:10]) if top_holders else 0.0
 
-                # Get holder count
-                holder_count = data.get('markets', [{}])[0].get('holder', 0) if data.get('markets') else 0
+                    # Get holder count
+                    holder_count = data.get('markets', [{}])[0].get('holder', 0) if data.get('markets') else 0
 
-                # Get rugcheck score
-                rugcheck_score = float(data.get('score', 0))
+                    # Get rugcheck score
+                    rugcheck_score = float(data.get('score', 0))
+                    ctx['rugcheck_score'] = rugcheck_score
 
-                return {
-                    'mint_authority_revoked': mint_revoked,
-                    'freeze_authority_revoked': freeze_revoked,
-                    'top_holder_percent': top_holder_percent,
-                    'top_10_holders_percent': top_10_percent,
-                    'holder_count': holder_count,
-                    'rugcheck_score': rugcheck_score,
-                    'raw_data': data
-                }
+                    return {
+                        'mint_authority_revoked': mint_revoked,
+                        'freeze_authority_revoked': freeze_revoked,
+                        'top_holder_percent': top_holder_percent,
+                        'top_10_holders_percent': top_10_percent,
+                        'holder_count': holder_count,
+                        'rugcheck_score': rugcheck_score,
+                        'raw_data': data
+                    }
 
-            except requests.exceptions.Timeout:
-                if attempt < self.retry_attempts:
-                    time.sleep(1)
-                    continue
-                print(f"⚠️  RugCheck API timeout after {self.retry_attempts + 1} attempts")
-                return None
-            except requests.exceptions.RequestException as e:
-                print(f"⚠️  RugCheck API error: {e}")
-                return None
-            except (KeyError, ValueError) as e:
-                print(f"⚠️  Error parsing RugCheck data: {e}")
-                return None
+                except requests.exceptions.Timeout:
+                    if attempt < self.retry_attempts:
+                        api_logger.warning("RugCheck timeout, retrying", token=address[:8], attempt=attempt+1)
+                        time.sleep(1)
+                        continue
+                    api_logger.error("RugCheck timeout after all retries", token=address[:8], attempts=self.retry_attempts+1)
+                    return None
+                except requests.exceptions.RequestException as e:
+                    api_logger.error("RugCheck request failed", token=address[:8], error=str(e))
+                    return None
+                except (KeyError, ValueError) as e:
+                    api_logger.error("RugCheck data parsing failed", token=address[:8], error=str(e))
+                    return None
 
         return None
 
@@ -260,7 +271,225 @@ class MemecoinDataFetcher:
         if liquidity > 0 and (volume / liquidity) < 0.05:
             red_flags.append(f"🟡 MEDIUM: Low trading activity (V/L ratio: {volume/liquidity:.3f})")
 
+        # Honeypot risk indicators
+        honeypot_risk = data.get('honeypot_risk')
+        if honeypot_risk == 'HIGH':
+            red_flags.append("🔴 CRITICAL: HIGH honeypot risk - may not be sellable!")
+        elif honeypot_risk == 'MEDIUM':
+            red_flags.append("🟠 HIGH RISK: Moderate honeypot risk detected")
+
+        # Token tax warnings
+        buy_tax = data.get('estimated_buy_tax', 0)
+        sell_tax = data.get('estimated_sell_tax', 0)
+        if sell_tax > 20:
+            red_flags.append(f"🔴 CRITICAL: Very high sell tax ({sell_tax:.0f}%)")
+        elif sell_tax > 10:
+            red_flags.append(f"🟠 HIGH RISK: High sell tax ({sell_tax:.0f}%)")
+        elif sell_tax > 5:
+            red_flags.append(f"🟡 MEDIUM: Moderate sell tax ({sell_tax:.0f}%)")
+
+        if buy_tax > 10:
+            red_flags.append(f"🟠 HIGH RISK: High buy tax ({buy_tax:.0f}%)")
+
+        # Liquidity concentration warning
+        top_10_holders = data.get('top_10_holders_percent', 0)
+        if top_10_holders > 50:
+            red_flags.append(f"🟠 HIGH RISK: Top 10 holders control {top_10_holders:.0f}%")
+
+        # Buy/sell imbalance warning
+        buy_sell_ratio = data.get('buy_sell_ratio')
+        if buy_sell_ratio is not None and buy_sell_ratio < 0.3:
+            red_flags.append(f"🟡 MEDIUM: Heavy selling pressure (buy/sell ratio: {buy_sell_ratio:.2f})")
+
         return red_flags
+
+    def calculate_honeypot_risk(self, data: Dict[str, Any]) -> str:
+        """
+        Estimate honeypot risk based on available indicators.
+        Returns: 'LOW', 'MEDIUM', or 'HIGH'
+        """
+        risk_score = 0
+
+        # Check mint authority (can create infinite tokens)
+        if not data.get('mint_authority_revoked', True):
+            risk_score += 3
+
+        # Check freeze authority (can freeze your tokens)
+        if not data.get('freeze_authority_revoked', True):
+            risk_score += 3
+
+        # Very low liquidity makes selling difficult
+        liquidity = data.get('liquidity_usd', 0)
+        if liquidity < 5000:
+            risk_score += 2
+        elif liquidity < 10000:
+            risk_score += 1
+
+        # High sell tax indicator
+        sell_tax = data.get('estimated_sell_tax', 0)
+        if sell_tax > 20:
+            risk_score += 3
+        elif sell_tax > 10:
+            risk_score += 2
+        elif sell_tax > 5:
+            risk_score += 1
+
+        # Extreme holder concentration
+        top_holder = data.get('top_holder_percent', 0)
+        if top_holder > 50:
+            risk_score += 2
+        elif top_holder > 30:
+            risk_score += 1
+
+        # Very new token
+        token_age = data.get('token_age_hours', 0)
+        if token_age < 0.25:  # Less than 15 minutes
+            risk_score += 1
+
+        # Determine risk level
+        if risk_score >= 5:
+            return 'HIGH'
+        elif risk_score >= 3:
+            return 'MEDIUM'
+        else:
+            return 'LOW'
+
+    def calculate_momentum_score(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Calculate momentum indicators from price and volume data.
+        Returns dict with momentum metrics.
+        """
+        momentum = {
+            'buy_sell_ratio': None,
+            'buy_sell_pressure': 'NEUTRAL',
+            'volume_trend': 'UNKNOWN',
+            'price_momentum': 'NEUTRAL',
+            'momentum_score': 5.0  # Neutral score out of 10
+        }
+
+        # Buy/Sell Pressure Analysis
+        buy_count = data.get('buy_count_24h')
+        sell_count = data.get('sell_count_24h')
+
+        if buy_count is not None and sell_count is not None and (buy_count + sell_count) > 0:
+            total_txns = buy_count + sell_count
+            momentum['buy_sell_ratio'] = buy_count / total_txns if total_txns > 0 else 0.5
+
+            if momentum['buy_sell_ratio'] > 0.65:
+                momentum['buy_sell_pressure'] = 'STRONG BUY'
+            elif momentum['buy_sell_ratio'] > 0.55:
+                momentum['buy_sell_pressure'] = 'BUY'
+            elif momentum['buy_sell_ratio'] < 0.35:
+                momentum['buy_sell_pressure'] = 'STRONG SELL'
+            elif momentum['buy_sell_ratio'] < 0.45:
+                momentum['buy_sell_pressure'] = 'SELL'
+            else:
+                momentum['buy_sell_pressure'] = 'NEUTRAL'
+
+        # Price Momentum (based on price changes across timeframes)
+        price_5m = data.get('price_change_5m') or 0
+        price_1h = data.get('price_change_1h') or 0
+        price_24h = data.get('price_change_24h') or 0
+
+        # Weight recent changes more heavily
+        weighted_change = (price_5m * 0.5) + (price_1h * 0.3) + (price_24h * 0.2)
+
+        if weighted_change > 20:
+            momentum['price_momentum'] = 'STRONG UP'
+        elif weighted_change > 5:
+            momentum['price_momentum'] = 'UP'
+        elif weighted_change < -20:
+            momentum['price_momentum'] = 'STRONG DOWN'
+        elif weighted_change < -5:
+            momentum['price_momentum'] = 'DOWN'
+        else:
+            momentum['price_momentum'] = 'NEUTRAL'
+
+        # Volume Trend Analysis
+        volume = data.get('volume_24h', 0)
+        liquidity = data.get('liquidity_usd', 0)
+
+        if liquidity > 0:
+            vol_liq_ratio = volume / liquidity
+            if vol_liq_ratio > 2.0:
+                momentum['volume_trend'] = 'VERY HIGH'
+            elif vol_liq_ratio > 1.0:
+                momentum['volume_trend'] = 'HIGH'
+            elif vol_liq_ratio > 0.3:
+                momentum['volume_trend'] = 'NORMAL'
+            elif vol_liq_ratio > 0.1:
+                momentum['volume_trend'] = 'LOW'
+            else:
+                momentum['volume_trend'] = 'VERY LOW'
+
+        # Calculate overall momentum score (0-10)
+        score = 5.0  # Start neutral
+
+        # Buy/sell pressure contribution (+/- 2 points)
+        if momentum['buy_sell_pressure'] == 'STRONG BUY':
+            score += 2.0
+        elif momentum['buy_sell_pressure'] == 'BUY':
+            score += 1.0
+        elif momentum['buy_sell_pressure'] == 'STRONG SELL':
+            score -= 2.0
+        elif momentum['buy_sell_pressure'] == 'SELL':
+            score -= 1.0
+
+        # Price momentum contribution (+/- 2 points)
+        if momentum['price_momentum'] == 'STRONG UP':
+            score += 2.0
+        elif momentum['price_momentum'] == 'UP':
+            score += 1.0
+        elif momentum['price_momentum'] == 'STRONG DOWN':
+            score -= 2.0
+        elif momentum['price_momentum'] == 'DOWN':
+            score -= 1.0
+
+        # Volume contribution (+/- 1 point)
+        if momentum['volume_trend'] in ['VERY HIGH', 'HIGH']:
+            score += 1.0
+        elif momentum['volume_trend'] == 'VERY LOW':
+            score -= 1.0
+
+        momentum['momentum_score'] = max(0.0, min(10.0, score))
+
+        return momentum
+
+    def estimate_token_taxes(self, rugcheck_data: Dict[str, Any]) -> Dict[str, float]:
+        """
+        Estimate buy/sell taxes from RugCheck data if available.
+        Returns dict with estimated taxes.
+        """
+        taxes = {
+            'estimated_buy_tax': 0.0,
+            'estimated_sell_tax': 0.0,
+            'tax_warning': None
+        }
+
+        if not rugcheck_data:
+            return taxes
+
+        # Check for transfer fee in RugCheck risks
+        risks = rugcheck_data.get('risks', [])
+        for risk in risks:
+            risk_name = risk.get('name', '').lower()
+            risk_desc = risk.get('description', '').lower()
+
+            # Look for tax-related risks
+            if 'transfer fee' in risk_name or 'tax' in risk_name:
+                # Try to extract percentage from description
+                import re
+                match = re.search(r'(\d+(?:\.\d+)?)\s*%', risk_desc)
+                if match:
+                    tax_pct = float(match.group(1))
+                    taxes['estimated_sell_tax'] = max(taxes['estimated_sell_tax'], tax_pct)
+                    taxes['estimated_buy_tax'] = max(taxes['estimated_buy_tax'], tax_pct)
+
+            # Check for specific warnings
+            if 'honeypot' in risk_name or 'cannot sell' in risk_desc:
+                taxes['tax_warning'] = 'POTENTIAL_HONEYPOT'
+
+        return taxes
 
     def calculate_safety_score(self, data: Dict[str, Any]) -> float:
         """Calculate safety score (0-10) based on various factors."""
@@ -335,7 +564,62 @@ class MemecoinDataFetcher:
                     'holding_percent': holder.get('pct', 0)
                 })
 
+        # Sort by tier (S > A > B > C) then by holding percent
+        tier_order = {'S': 0, 'A': 1, 'B': 2, 'C': 3}
+        matches.sort(key=lambda x: (tier_order.get(x['tier'], 4), -x['holding_percent']))
+
         return matches
+
+    def analyze_holder_distribution(self, top_holders: List[Dict]) -> Dict[str, Any]:
+        """
+        Analyze holder distribution for concentration risk.
+
+        Returns:
+            Dict with distribution metrics
+        """
+        analysis = {
+            'holder_concentration': 'UNKNOWN',
+            'whale_count': 0,
+            'top_holder_pct': 0,
+            'top_5_pct': 0,
+            'top_10_pct': 0,
+            'distribution_score': 5.0  # Neutral score out of 10
+        }
+
+        if not top_holders:
+            return analysis
+
+        # Calculate metrics
+        top_holder_pct = float(top_holders[0].get('pct', 0)) if top_holders else 0
+        top_5_pct = sum(float(h.get('pct', 0)) for h in top_holders[:5])
+        top_10_pct = sum(float(h.get('pct', 0)) for h in top_holders[:10])
+
+        # Count whales (holders with > 3%)
+        whale_count = sum(1 for h in top_holders if float(h.get('pct', 0)) > 3)
+
+        analysis['top_holder_pct'] = top_holder_pct
+        analysis['top_5_pct'] = top_5_pct
+        analysis['top_10_pct'] = top_10_pct
+        analysis['whale_count'] = whale_count
+
+        # Determine concentration level
+        if top_holder_pct > 30 or top_5_pct > 60:
+            analysis['holder_concentration'] = 'CRITICAL'
+            analysis['distribution_score'] = 1.0
+        elif top_holder_pct > 20 or top_5_pct > 50:
+            analysis['holder_concentration'] = 'HIGH'
+            analysis['distribution_score'] = 3.0
+        elif top_holder_pct > 10 or top_5_pct > 35:
+            analysis['holder_concentration'] = 'MODERATE'
+            analysis['distribution_score'] = 6.0
+        elif top_holder_pct > 5:
+            analysis['holder_concentration'] = 'LOW'
+            analysis['distribution_score'] = 8.0
+        else:
+            analysis['holder_concentration'] = 'HEALTHY'
+            analysis['distribution_score'] = 10.0
+
+        return analysis
 
     def fetch_all_data(self, address: str, tracked_wallets: List[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
         """Fetch and combine data from all sources. Uses Birdeye as primary, DexScreener as backup."""
@@ -401,6 +685,15 @@ class MemecoinDataFetcher:
                 'freeze_authority_revoked': 1 if rug_data['freeze_authority_revoked'] else 0,
                 'rugcheck_score': rug_data['rugcheck_score'],
             })
+
+            # Estimate token taxes from RugCheck risks
+            taxes = self.estimate_token_taxes(rug_data.get('raw_data', {}))
+            combined_data.update(taxes)
+
+            # Analyze holder distribution
+            top_holders = rug_data.get('raw_data', {}).get('topHolders', [])
+            holder_analysis = self.analyze_holder_distribution(top_holders)
+            combined_data.update(holder_analysis)
         else:
             # Set defaults if RugCheck fails - use Birdeye holder count if available
             combined_data.update({
@@ -410,6 +703,9 @@ class MemecoinDataFetcher:
                 'mint_authority_revoked': None,
                 'freeze_authority_revoked': None,
                 'rugcheck_score': None,
+                'estimated_buy_tax': 0.0,
+                'estimated_sell_tax': 0.0,
+                'tax_warning': None,
             })
 
         # Check for smart money wallets
@@ -429,14 +725,28 @@ class MemecoinDataFetcher:
         combined_data['smart_money_wallets'] = smart_money_wallets
         combined_data['smart_money_count'] = len(smart_money_wallets)
 
+        # Calculate honeypot risk
+        combined_data['honeypot_risk'] = self.calculate_honeypot_risk(combined_data)
+
+        # Calculate momentum indicators
+        momentum = self.calculate_momentum_score(combined_data)
+        combined_data.update(momentum)
+
         # Calculate safety score (base score)
         base_safety_score = self.calculate_safety_score(combined_data)
 
+        # Adjust for honeypot risk
+        honeypot_penalty = 0
+        if combined_data['honeypot_risk'] == 'HIGH':
+            honeypot_penalty = 3.0
+        elif combined_data['honeypot_risk'] == 'MEDIUM':
+            honeypot_penalty = 1.5
+
         # Add smart money bonus (capped at 10.0)
-        combined_data['safety_score'] = min(10.0, base_safety_score + smart_money_bonus)
+        combined_data['safety_score'] = max(0.0, min(10.0, base_safety_score + smart_money_bonus - honeypot_penalty))
         combined_data['smart_money_bonus'] = smart_money_bonus
 
-        # Detect red flags
+        # Detect red flags (now includes honeypot and tax warnings)
         combined_data['red_flags'] = self.detect_red_flags(combined_data)
 
         # Store raw data
@@ -481,6 +791,30 @@ if __name__ == "__main__":
         print(f"   Mint Revoked: {'✅' if data.get('mint_authority_revoked') else '❌'}")
         print(f"   Freeze Revoked: {'✅' if data.get('freeze_authority_revoked') else '❌'}")
         print(f"   RugCheck Score: {data.get('rugcheck_score', 'N/A')}")
+
+        # NEW: Honeypot risk
+        print(f"\n🚨 HONEYPOT RISK: {data.get('honeypot_risk', 'UNKNOWN')}")
+
+        # NEW: Token taxes
+        buy_tax = data.get('estimated_buy_tax', 0)
+        sell_tax = data.get('estimated_sell_tax', 0)
+        if buy_tax > 0 or sell_tax > 0:
+            print(f"💸 Token Taxes: Buy {buy_tax:.0f}% / Sell {sell_tax:.0f}%")
+
+        # NEW: Holder distribution
+        holder_conc = data.get('holder_concentration')
+        if holder_conc:
+            print(f"\n📊 HOLDER DISTRIBUTION:")
+            print(f"   Concentration: {holder_conc}")
+            print(f"   Top 5 Holders: {data.get('top_5_pct', 0):.1f}%")
+            print(f"   Whale Count: {data.get('whale_count', 0)}")
+
+        # NEW: Momentum indicators
+        print(f"\n📈 MOMENTUM:")
+        print(f"   Score: {data.get('momentum_score', 5):.1f}/10")
+        print(f"   Buy/Sell Pressure: {data.get('buy_sell_pressure', 'NEUTRAL')}")
+        print(f"   Price Momentum: {data.get('price_momentum', 'NEUTRAL')}")
+        print(f"   Volume Trend: {data.get('volume_trend', 'UNKNOWN')}")
 
         print(f"\n🎯 SAFETY SCORE: {data.get('safety_score', 0):.1f}/10")
 

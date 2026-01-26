@@ -10,6 +10,7 @@ import time
 from datetime import datetime, timedelta
 from database import MemecoinDatabase
 from data_fetcher import MemecoinDataFetcher
+from app_logger import tracker_logger, log_performance
 
 
 class PerformanceTracker:
@@ -185,6 +186,9 @@ class PerformanceTracker:
             limit: Maximum number of tokens to update (None = all)
             min_age_hours: Only update tokens older than this many hours
         """
+        start_time = time.time()
+        tracker_logger.info("Performance tracker started", limit=limit, min_age_hours=min_age_hours)
+
         print("="*60)
         print("📊 PERFORMANCE TRACKER")
         print("="*60)
@@ -192,6 +196,7 @@ class PerformanceTracker:
         tokens = self.get_all_tracked_tokens()
 
         if not tokens:
+            tracker_logger.warning("No active tokens to track")
             print("\n⚠️  No active tokens to track!")
             print("💡 Tokens are only tracked if they are WATCH or open TRADE positions.")
             print("💡 PASS decisions and closed trades (with exit recorded) are not tracked.")
@@ -202,6 +207,7 @@ class PerformanceTracker:
             tokens = [t for t in tokens
                      if self.calculate_time_since_snapshot(t['snapshot_timestamp']) >= min_age_hours]
 
+        tracker_logger.info("Found tokens to update", token_count=len(tokens))
         print(f"\n📋 Found {len(tokens)} active token(s) to update (WATCH or open TRADE positions)")
 
         if limit:
@@ -212,17 +218,28 @@ class PerformanceTracker:
 
         # Track all unique sources for updating stats later
         sources_to_update = set()
+        updated_count = 0
+        error_count = 0
 
         # Update each token
         for i, token in enumerate(tokens, 1):
             print(f"[{i}/{len(tokens)}] {token['token_symbol']} from {token['source']}")
 
-            self.update_token_performance(
-                call_id=token['call_id'],
-                contract_address=token['contract_address'],
-                entry_price=token['entry_price'],
-                snapshot_timestamp=token['snapshot_timestamp']
-            )
+            try:
+                self.update_token_performance(
+                    call_id=token['call_id'],
+                    contract_address=token['contract_address'],
+                    entry_price=token['entry_price'],
+                    snapshot_timestamp=token['snapshot_timestamp']
+                )
+                updated_count += 1
+            except Exception as e:
+                error_count += 1
+                tracker_logger.error("Failed to update token",
+                    token=token['token_symbol'],
+                    call_id=token['call_id'],
+                    error=str(e)
+                )
 
             # Split comma-separated sources and add each individually
             source_list = [s.strip() for s in token['source'].split(',') if s.strip()]
@@ -238,6 +255,14 @@ class PerformanceTracker:
         for source in sorted(sources_to_update):
             self.db.update_source_performance(source)
             print(f"  ✅ Updated {source}")
+
+        duration_ms = round((time.time() - start_time) * 1000, 2)
+        tracker_logger.info("Performance tracker completed",
+            duration_ms=duration_ms,
+            tokens_updated=updated_count,
+            errors=error_count,
+            sources_updated=len(sources_to_update)
+        )
 
         print("\n" + "="*60)
         print("✅ Performance tracking complete!")
