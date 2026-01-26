@@ -124,6 +124,35 @@ class MemecoinDatabase:
         p = self._placeholder()
         return ', '.join([p] * count)
 
+    def _to_bool(self, value: str | bool | None) -> bool | str | None:
+        """Convert boolean value to appropriate type for database.
+
+        PostgreSQL uses native BOOLEAN, SQLite uses TEXT 'yes'/'no'.
+        """
+        if value is None:
+            return None
+        if self.db_type == 'postgres':
+            # PostgreSQL: use native boolean
+            if isinstance(value, bool):
+                return value
+            return value == 'yes' or value is True
+        else:
+            # SQLite: use 'yes'/'no' strings
+            if isinstance(value, bool):
+                return 'yes' if value else 'no'
+            return value  # Already a string
+
+    def _from_bool(self, value: bool | str | None) -> bool:
+        """Convert database boolean to Python bool.
+
+        Handles both PostgreSQL BOOLEAN and SQLite TEXT 'yes'/'no'.
+        """
+        if value is None:
+            return False
+        if isinstance(value, bool):
+            return value
+        return value == 'yes'
+
     def create_tables(self) -> None:
         """Create all database tables if they don't exist (SQLite only - PostgreSQL uses migration)."""
         if self.db_type == 'postgres':
@@ -471,6 +500,10 @@ class MemecoinDatabase:
         """Insert or update performance tracking data."""
         timestamp = datetime.now().isoformat()
 
+        # Convert boolean fields to appropriate type for database
+        token_alive = self._to_bool(data.get('token_still_alive'))
+        rug_occurred = self._to_bool(data.get('rug_pull_occurred'))
+
         self._execute(
             'SELECT tracking_id FROM performance_tracking WHERE call_id = ?',
             (call_id,)
@@ -505,8 +538,8 @@ class MemecoinDatabase:
                 data.get('current_liquidity'),
                 data.get('max_gain_observed'),
                 data.get('max_loss_observed'),
-                data.get('token_still_alive'),
-                data.get('rug_pull_occurred'),
+                token_alive,
+                rug_occurred,
                 data.get('checkpoint_type'),
                 data.get('max_price_since_entry'),
                 data.get('min_price_since_entry'),
@@ -524,8 +557,8 @@ class MemecoinDatabase:
                 data.get('current_liquidity'),
                 data.get('max_gain_observed'),
                 data.get('max_loss_observed'),
-                data.get('token_still_alive'),
-                data.get('rug_pull_occurred'),
+                token_alive,
+                rug_occurred,
                 data.get('checkpoint_type'),
                 data.get('max_price_since_entry'),
                 data.get('min_price_since_entry')
@@ -586,7 +619,8 @@ class MemecoinDatabase:
         gains = [c['max_gain_observed'] for c in calls if c['max_gain_observed'] is not None and c['max_gain_observed'] > 0]
         avg_max_gain = sum(gains) / len(gains) if gains else 0.0
 
-        rugs = sum(1 for c in calls if c['rug_pull_occurred'] == 'yes')
+        # Handle both BOOLEAN (PostgreSQL) and TEXT 'yes'/'no' (SQLite)
+        rugs = sum(1 for c in calls if self._from_bool(c['rug_pull_occurred']))
         rug_rate = rugs / total_calls if total_calls > 0 else 0.0
 
         traded_calls = [c for c in calls if c['my_decision'] == 'TRADE']
