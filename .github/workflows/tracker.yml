@@ -2,9 +2,11 @@ name: Performance Tracker
 
 on:
   schedule:
-    # Run every 5 minutes
-    - cron: '*/5 * * * *'
+    # Backup: Run every 15 minutes (in case cron-job.org fails)
+    - cron: '*/15 * * * *'
   workflow_dispatch:  # Allow manual trigger
+  repository_dispatch:  # Allow external trigger via API
+    types: [run-tracker]
 
 jobs:
   track:
