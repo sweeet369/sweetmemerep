@@ -1,7 +1,21 @@
+from __future__ import annotations
+
 import json
+import logging
 import os
 from datetime import datetime
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from psycopg2.extensions import connection as PgConnection, cursor as PgCursor
+    from sqlite3 import Connection as SqliteConnection, Cursor as SqliteCursor
+
+# Setup logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 # Load environment variables from .env file (if it exists)
 try:
@@ -19,6 +33,23 @@ DEFAULT_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "meme
 
 # Check if we should use PostgreSQL (Supabase) or SQLite
 DATABASE_URL = os.environ.get('DATABASE_URL')
+
+# Connection pool for PostgreSQL (initialized lazily)
+_pg_connection_pool = None
+
+
+def get_pg_pool():
+    """Get or create PostgreSQL connection pool."""
+    global _pg_connection_pool
+    if _pg_connection_pool is None and DATABASE_URL:
+        from psycopg2.pool import ThreadedConnectionPool
+        _pg_connection_pool = ThreadedConnectionPool(
+            minconn=2,
+            maxconn=10,
+            dsn=DATABASE_URL
+        )
+        logger.info("PostgreSQL connection pool initialized (min=2, max=10)")
+    return _pg_connection_pool
 
 
 def get_db_connection():
@@ -38,15 +69,39 @@ def get_db_connection():
 class MemecoinDatabase:
     """Database manager for memecoin trading analyzer. Supports SQLite and PostgreSQL."""
 
-    def __init__(self, db_path: str = None):
-        """Initialize database connection."""
-        self.db_type = None
+    # Type hints for instance attributes
+    db_type: str
+    db_path: str
+    conn: PgConnection | SqliteConnection
+    cursor: PgCursor | SqliteCursor
+    _using_pool: bool
+
+    def __init__(self, db_path: str | None = None, use_pool: bool = True):
+        """Initialize database connection.
+
+        Args:
+            db_path: Path for SQLite database (ignored if DATABASE_URL is set)
+            use_pool: Whether to use connection pooling for PostgreSQL
+        """
+        self._using_pool = False
 
         if DATABASE_URL:
             # Use PostgreSQL (Supabase)
-            import psycopg2
             from psycopg2.extras import RealDictCursor
-            self.conn = psycopg2.connect(DATABASE_URL)
+
+            if use_pool:
+                pool = get_pg_pool()
+                if pool:
+                    self.conn = pool.getconn()
+                    self._using_pool = True
+                    logger.debug("Got connection from pool")
+                else:
+                    import psycopg2
+                    self.conn = psycopg2.connect(DATABASE_URL)
+            else:
+                import psycopg2
+                self.conn = psycopg2.connect(DATABASE_URL)
+
             self.cursor = self.conn.cursor(cursor_factory=RealDictCursor)
             self.db_type = 'postgres'
             self.db_path = DATABASE_URL[:50] + '...'  # Truncate for display
@@ -60,16 +115,16 @@ class MemecoinDatabase:
             self.db_type = 'sqlite'
             self.create_tables()
 
-    def _placeholder(self):
+    def _placeholder(self) -> str:
         """Return the correct placeholder for the database type."""
         return '%s' if self.db_type == 'postgres' else '?'
 
-    def _placeholders(self, count: int):
+    def _placeholders(self, count: int) -> str:
         """Return multiple placeholders."""
         p = self._placeholder()
         return ', '.join([p] * count)
 
-    def create_tables(self):
+    def create_tables(self) -> None:
         """Create all database tables if they don't exist (SQLite only - PostgreSQL uses migration)."""
         if self.db_type == 'postgres':
             return  # Tables created via SQL migration in Supabase
@@ -191,25 +246,33 @@ class MemecoinDatabase:
             )
         ''')
 
-        self.conn.commit()
+        # Create indexes for foreign keys and frequently queried columns
+        # This dramatically improves JOIN and lookup performance
+        self.cursor.execute('CREATE INDEX IF NOT EXISTS idx_initial_snapshot_call_id ON initial_snapshot(call_id)')
+        self.cursor.execute('CREATE INDEX IF NOT EXISTS idx_my_decisions_call_id ON my_decisions(call_id)')
+        self.cursor.execute('CREATE INDEX IF NOT EXISTS idx_performance_tracking_call_id ON performance_tracking(call_id)')
+        self.cursor.execute('CREATE INDEX IF NOT EXISTS idx_calls_received_source ON calls_received(source)')
+        self.cursor.execute('CREATE INDEX IF NOT EXISTS idx_calls_received_contract ON calls_received(contract_address)')
+        self.cursor.execute('CREATE INDEX IF NOT EXISTS idx_tracked_wallets_address ON tracked_wallets(wallet_address)')
 
-    def _execute(self, query: str, params: tuple = None):
+        self.conn.commit()
+        logger.info("SQLite tables and indexes created/verified")
+
+    def _execute(self, query: str, params: tuple | None = None) -> None:
         """Execute a query with proper placeholder substitution."""
         if self.db_type == 'postgres':
             # Replace ? with %s for PostgreSQL
             query = query.replace('?', '%s')
         self.cursor.execute(query, params or ())
 
-    def _fetchone(self):
+    def _fetchone(self) -> Dict[str, Any] | None:
         """Fetch one result as dict."""
         row = self.cursor.fetchone()
         if row is None:
             return None
-        if self.db_type == 'postgres':
-            return dict(row)
         return dict(row)
 
-    def _fetchall(self):
+    def _fetchall(self) -> List[Dict[str, Any]]:
         """Fetch all results as list of dicts."""
         rows = self.cursor.fetchall()
         return [dict(row) for row in rows]
@@ -240,13 +303,20 @@ class MemecoinDatabase:
                 return self.cursor.lastrowid
         except Exception as e:
             self.conn.rollback()
-            # Contract address already exists, return existing call_id
-            self._execute(
-                'SELECT call_id FROM calls_received WHERE contract_address = ?',
-                (contract_address,)
-            )
-            result = self._fetchone()
-            return result['call_id'] if result else -1
+            # Check if this is a unique constraint violation (contract already exists)
+            error_str = str(e).lower()
+            if 'unique' in error_str or 'duplicate' in error_str:
+                # Contract address already exists, return existing call_id
+                self._execute(
+                    'SELECT call_id FROM calls_received WHERE contract_address = ?',
+                    (contract_address,)
+                )
+                result = self._fetchone()
+                if result:
+                    return result['call_id']
+            # Log unexpected errors
+            logger.error(f"Failed to insert call for {contract_address}: {e}")
+            return -1
 
     def insert_snapshot(self, call_id: int, data: Dict[str, Any]) -> int:
         """Insert initial snapshot data."""
@@ -487,7 +557,7 @@ class MemecoinDatabase:
         self.conn.commit()
         return tracking_id
 
-    def update_source_performance(self, source_name: str):
+    def update_source_performance(self, source_name: str) -> None:
         """Calculate and update source performance statistics for an individual source."""
         timestamp = datetime.now().isoformat()
         source_name = source_name.strip()
@@ -583,13 +653,15 @@ class MemecoinDatabase:
         if not combined_sources:
             return 0
 
-        for source in combined_sources:
-            self._execute('''
-                DELETE FROM source_performance
-                WHERE source_name = ?
-            ''', (source,))
+        # Batch delete instead of N+1 pattern - single query for all deletions
+        placeholders = self._placeholders(len(combined_sources))
+        self._execute(
+            f'DELETE FROM source_performance WHERE source_name IN ({placeholders})',
+            tuple(combined_sources)
+        )
 
         self.conn.commit()
+        logger.info(f"Cleaned up {len(combined_sources)} combined source entries")
         return len(combined_sources)
 
     def get_all_sources(self) -> List[Dict[str, Any]]:
@@ -631,8 +703,13 @@ class MemecoinDatabase:
                 ''', (wallet_address, wallet_name, notes, timestamp))
                 self.conn.commit()
                 return self.cursor.lastrowid
-        except Exception:
+        except Exception as e:
             self.conn.rollback()
+            error_str = str(e).lower()
+            if 'unique' in error_str or 'duplicate' in error_str:
+                logger.warning(f"Wallet {wallet_address} already exists")
+            else:
+                logger.error(f"Failed to insert wallet {wallet_address}: {e}")
             return -1
 
     def remove_wallet(self, wallet_address: str) -> bool:
@@ -661,7 +738,7 @@ class MemecoinDatabase:
         return self._fetchone()
 
     def update_wallet_performance(self, wallet_address: str, win_rate: float,
-                                  avg_gain: float, total_buys: int):
+                                  avg_gain: float, total_buys: int) -> None:
         """Update wallet performance stats and calculate tier."""
         if win_rate > 0.7 and avg_gain > 400:
             tier = 'S'
@@ -695,15 +772,21 @@ class MemecoinDatabase:
                 count += 1
         return count
 
-    def close(self):
-        """Close database connection."""
+    def close(self) -> None:
+        """Close database connection or return to pool."""
+        if self._using_pool:
+            pool = get_pg_pool()
+            if pool:
+                pool.putconn(self.conn)
+                logger.debug("Connection returned to pool")
+                return
         self.conn.close()
 
-    def __enter__(self):
+    def __enter__(self) -> MemecoinDatabase:
         """Context manager entry."""
         return self
 
-    def __exit__(self, exc_type, exc_val, exc_tb):
+    def __exit__(self, exc_type: type | None, exc_val: Exception | None, exc_tb: Any) -> None:
         """Context manager exit."""
         self.close()
 

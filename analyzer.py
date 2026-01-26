@@ -3,27 +3,207 @@
 Memecoin Trading Analyzer - Main CLI Interface
 """
 
+from __future__ import annotations
+
+import json
+import logging
 import sys
+from dataclasses import dataclass
 from datetime import datetime
+from typing import Any, Generic, TypeVar
+
 from database import MemecoinDatabase
 from data_fetcher import MemecoinDataFetcher
+
+# =============================================================================
+# LOGGING SETUP
+# =============================================================================
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('analyzer.log'),
+    ]
+)
+logger = logging.getLogger(__name__)
+
+# =============================================================================
+# TYPE DEFINITIONS
+# =============================================================================
+
+T = TypeVar('T')
+SafetyRating = tuple[str, str]  # (rating_text, emoji)
+TokenData = dict[str, Any]
+WalletInfo = dict[str, Any]
+
+
+@dataclass(frozen=True)
+class Result(Generic[T]):
+    """Result type for explicit error handling."""
+    success: bool
+    data: T | None = None
+    error: str | None = None
+
+    @classmethod
+    def ok(cls, data: T) -> Result[T]:
+        return cls(success=True, data=data)
+
+    @classmethod
+    def err(cls, error: str) -> Result[T]:
+        return cls(success=False, error=error)
+
+
+# =============================================================================
+# CONSTANTS
+# =============================================================================
+
+TIER_EMOJI: dict[str, str] = {
+    'S': '🏆',
+    'A': '🥇',
+    'B': '🥈',
+    'C': '🥉',
+}
+DEFAULT_TIER_EMOJI = '📊'
+
+SAFETY_THRESHOLDS = {
+    'GOOD': 8.0,
+    'MODERATE': 6.0,
+    'RISKY': 4.0,
+}
+
+HONEYPOT_EMOJI = {
+    'HIGH': '🚨',
+    'MEDIUM': '⚠️',
+    'LOW': '✅',
+}
+
+PRESSURE_EMOJI = {
+    'STRONG BUY': '🟢🟢',
+    'BUY': '🟢',
+    'NEUTRAL': '⚪',
+    'SELL': '🔴',
+    'STRONG SELL': '🔴🔴',
+}
+
+MOMENTUM_EMOJI = {
+    'STRONG UP': '🚀',
+    'UP': '📈',
+    'NEUTRAL': '➡️',
+    'DOWN': '📉',
+    'STRONG DOWN': '💥',
+}
+
+VOLUME_EMOJI = {
+    'VERY HIGH': '🔥',
+    'HIGH': '📊',
+    'NORMAL': '➡️',
+    'LOW': '📉',
+    'VERY LOW': '❄️',
+}
+
+CONCENTRATION_EMOJI = {
+    'CRITICAL': '🔴',
+    'HIGH': '🟠',
+    'MODERATE': '🟡',
+    'LOW': '✅',
+    'HEALTHY': '✅',
+}
+
+
+# =============================================================================
+# CUSTOM EXCEPTIONS
+# =============================================================================
+
+class AnalyzerError(Exception):
+    """Base exception for analyzer errors."""
+
+    def __init__(self, message: str, user_message: str | None = None):
+        super().__init__(message)
+        self.user_message = user_message or message
+        logger.error(f"{self.__class__.__name__}: {message}")
+
+
+class TokenNotFoundError(AnalyzerError):
+    """Token doesn't exist or couldn't be fetched."""
+    pass
+
+
+class DatabaseError(AnalyzerError):
+    """Database operation failed."""
+    pass
+
+
+class APIError(AnalyzerError):
+    """External API call failed."""
+    pass
+
+
+class ValidationError(AnalyzerError):
+    """Input validation failed."""
+    pass
+
+
+# =============================================================================
+# VALIDATION HELPERS
+# =============================================================================
+
+def validate_contract_address(address: str) -> Result[str]:
+    """Validate contract address format."""
+    address = address.strip()
+    if not address:
+        return Result.err("Contract address is required")
+    if len(address) < 32:
+        return Result.err("Contract address too short (minimum 32 characters)")
+    if len(address) > 50:
+        return Result.err("Contract address too long (maximum 50 characters)")
+    return Result.ok(address)
+
+
+def validate_positive_number(value: str, field_name: str) -> Result[float]:
+    """Validate that input is a positive number."""
+    value = value.strip()
+    if not value:
+        return Result.err(f"{field_name} is required")
+    try:
+        num = float(value)
+        if num <= 0:
+            return Result.err(f"{field_name} must be positive")
+        return Result.ok(num)
+    except ValueError:
+        return Result.err(f"{field_name} must be a valid number")
+
+
+def validate_confidence_level(value: str) -> Result[int]:
+    """Validate confidence level (1-10)."""
+    value = value.strip()
+    if not value:
+        return Result.ok(5)  # Default
+    try:
+        level = int(value)
+        if level < 1 or level > 10:
+            return Result.err("Confidence must be between 1 and 10")
+        return Result.ok(level)
+    except ValueError:
+        return Result.err("Confidence must be a number")
 
 
 class MemecoinAnalyzer:
     """Main CLI interface for memecoin analysis."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         """Initialize analyzer with database and data fetcher."""
-        self.db = MemecoinDatabase()
-        self.fetcher = MemecoinDataFetcher()
+        self.db: MemecoinDatabase = MemecoinDatabase()
+        self.fetcher: MemecoinDataFetcher = MemecoinDataFetcher()
+        logger.info("MemecoinAnalyzer initialized")
 
-    def print_header(self):
+    def print_header(self) -> None:
         """Print the main header."""
         print("\n" + "="*60)
         print("🪙  MEMECOIN ANALYZER")
         print("="*60)
 
-    def print_menu(self):
+    def print_menu(self) -> None:
         """Print the main menu."""
         print("\nOptions:")
         print("  [1] Analyze new call")
@@ -38,19 +218,33 @@ class MemecoinAnalyzer:
         print("  [0] Exit")
         print()
 
-    def get_safety_rating(self, score: float) -> tuple:
-        """Get safety rating text and emoji based on score."""
-        if score >= 8.0:
+    def get_safety_rating(self, score: float) -> SafetyRating:
+        """Get safety rating text and emoji based on score.
+
+        Args:
+            score: Safety score from 0-10
+
+        Returns:
+            Tuple of (rating_text, emoji)
+        """
+        if score >= SAFETY_THRESHOLDS['GOOD']:
             return "GOOD", "🟢"
-        elif score >= 6.0:
+        elif score >= SAFETY_THRESHOLDS['MODERATE']:
             return "MODERATE", "🟡"
-        elif score >= 4.0:
+        elif score >= SAFETY_THRESHOLDS['RISKY']:
             return "RISKY", "🟠"
         else:
             return "DANGEROUS", "🔴"
 
-    def format_currency(self, value: float) -> str:
-        """Format currency with appropriate suffix."""
+    def format_currency(self, value: float | None) -> str:
+        """Format currency with appropriate suffix (K, M).
+
+        Args:
+            value: Dollar amount or None
+
+        Returns:
+            Formatted string like "$1.5M" or "N/A"
+        """
         if value is None:
             return "N/A"
         if value >= 1_000_000:
@@ -60,17 +254,30 @@ class MemecoinAnalyzer:
         else:
             return f"${value:.2f}"
 
-    def analyze_new_call(self):
+    def get_tier_emoji(self, tier: str) -> str:
+        """Get emoji for tier rating.
+
+        Args:
+            tier: Tier letter (S, A, B, C)
+
+        Returns:
+            Emoji string
+        """
+        return TIER_EMOJI.get(tier, DEFAULT_TIER_EMOJI)
+
+    def analyze_new_call(self) -> None:
         """Analyze a new memecoin call."""
         print("\n" + "━"*60)
         print("📞 NEW CALL ANALYSIS")
         print("━"*60)
 
-        # Get contract address
-        contract_address = input("\nContract address: ").strip()
-        if not contract_address:
-            print("❌ Contract address is required")
+        # Get and validate contract address
+        address_input = input("\nContract address: ")
+        address_result = validate_contract_address(address_input)
+        if not address_result.success:
+            print(f"❌ {address_result.error}")
             return
+        contract_address = address_result.data
 
         # Get source(s) - allow comma-separated
         source_input = input("Source name(s) - comma-separated for multiple (e.g., 'Alpha Group #3, Twitter Call'): ").strip()
@@ -88,14 +295,21 @@ class MemecoinAnalyzer:
 
         print(f"\n⏳ Fetching data for {contract_address}...")
         print("━"*60)
+        logger.info(f"Analyzing token: {contract_address} from source: {source}")
 
         # Get tracked wallets for smart money detection
         tracked_wallets = self.db.get_all_wallets()
 
         # Fetch data (with smart money detection)
-        data = self.fetcher.fetch_all_data(contract_address, tracked_wallets=tracked_wallets)
+        try:
+            data = self.fetcher.fetch_all_data(contract_address, tracked_wallets=tracked_wallets)
+        except Exception as e:
+            logger.error(f"Failed to fetch data for {contract_address}: {e}", exc_info=True)
+            print(f"\n❌ API error: {e}")
+            return
 
         if not data:
+            logger.warning(f"No data returned for token: {contract_address}")
             print("\n❌ Failed to fetch token data. Token may not exist or APIs are unavailable.")
             return
 
@@ -132,8 +346,15 @@ class MemecoinAnalyzer:
 
         print(f"\n✅ Saved to database (Call ID: {call_id})")
 
-    def display_analysis(self, symbol: str, name: str, source: str, data: dict):
-        """Display the analysis results."""
+    def display_analysis(self, symbol: str, name: str, source: str, data: TokenData) -> None:
+        """Display the analysis results.
+
+        Args:
+            symbol: Token symbol (e.g., "PEPE")
+            name: Token name (e.g., "Pepe Coin")
+            source: Source of the call
+            data: Token data dictionary from fetcher
+        """
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
 
         print("\n" + "━"*60)
@@ -148,6 +369,16 @@ class MemecoinAnalyzer:
 
         print(f"\n🔒 SAFETY CHECKS:")
         print(f"{emoji} Safety Score: {safety_score:.1f}/10 ({rating})")
+
+        # Honeypot risk indicator
+        honeypot_risk = data.get('honeypot_risk', 'UNKNOWN')
+        hp_emoji = HONEYPOT_EMOJI.get(honeypot_risk, '❓')
+        if honeypot_risk == 'HIGH':
+            print(f"{hp_emoji} Honeypot Risk: HIGH - May not be sellable!")
+        elif honeypot_risk == 'MEDIUM':
+            print(f"{hp_emoji}  Honeypot Risk: MEDIUM - Proceed with caution")
+        elif honeypot_risk == 'LOW':
+            print(f"{hp_emoji} Honeypot Risk: LOW")
 
         mint_revoked = data.get('mint_authority_revoked')
         freeze_revoked = data.get('freeze_authority_revoked')
@@ -166,6 +397,13 @@ class MemecoinAnalyzer:
         else:
             print("⚠️  Freeze Authority: UNKNOWN")
 
+        # Token taxes
+        buy_tax = data.get('estimated_buy_tax', 0)
+        sell_tax = data.get('estimated_sell_tax', 0)
+        if buy_tax > 0 or sell_tax > 0:
+            tax_emoji = "🔴" if sell_tax > 10 else "🟡" if sell_tax > 5 else "✅"
+            print(f"{tax_emoji} Token Taxes: Buy {buy_tax:.0f}% / Sell {sell_tax:.0f}%")
+
         top_holder = data.get('top_holder_percent')
         if top_holder is not None:
             if top_holder > 20:
@@ -177,6 +415,14 @@ class MemecoinAnalyzer:
         else:
             print("⚠️  Top Holder: N/A")
 
+        # Holder distribution
+        holder_concentration = data.get('holder_concentration')
+        if holder_concentration:
+            conc_emoji = CONCENTRATION_EMOJI.get(holder_concentration, '⚪')
+            top_5_pct = data.get('top_5_pct', 0)
+            whale_count = data.get('whale_count', 0)
+            print(f"{conc_emoji} Distribution: {holder_concentration} (Top 5: {top_5_pct:.0f}%, {whale_count} whales)")
+
         # Smart money detection
         smart_money_wallets = data.get('smart_money_wallets', [])
         if smart_money_wallets:
@@ -187,6 +433,7 @@ class MemecoinAnalyzer:
                 win_rate_pct = wallet['win_rate'] * 100
                 avg_gain_pct = wallet['avg_gain']
                 print(f"{tier_emoji} Wallet: {wallet['wallet_name']} ({tier}-Tier, {win_rate_pct:.0f}% win rate, avg +{avg_gain_pct:.0f}%)")
+                logger.info(f"Smart money detected: {wallet['wallet_name']} tier={tier}")
 
             if len(smart_money_wallets) > 2:
                 others = len(smart_money_wallets) - 2
@@ -265,6 +512,30 @@ class MemecoinAnalyzer:
             print(f"🟢 Buys: {buy_count} ({buy_ratio:.1f}%)")
             print(f"🔴 Sells: {sell_count} ({100-buy_ratio:.1f}%)")
 
+        # Momentum indicators
+        momentum_score = data.get('momentum_score')
+        if momentum_score is not None:
+            print(f"\n📊 MOMENTUM ANALYSIS:")
+
+            # Overall momentum score
+            mom_emoji = "🚀" if momentum_score >= 7 else "📈" if momentum_score >= 5.5 else "📉" if momentum_score < 4 else "➡️"
+            print(f"{mom_emoji} Momentum Score: {momentum_score:.1f}/10")
+
+            # Buy/sell pressure
+            pressure = data.get('buy_sell_pressure', 'NEUTRAL')
+            pressure_emoji = PRESSURE_EMOJI.get(pressure, '⚪')
+            print(f"{pressure_emoji} Buy/Sell Pressure: {pressure}")
+
+            # Price momentum
+            price_mom = data.get('price_momentum', 'NEUTRAL')
+            price_emoji = MOMENTUM_EMOJI.get(price_mom, '➡️')
+            print(f"{price_emoji} Price Momentum: {price_mom}")
+
+            # Volume trend
+            vol_trend = data.get('volume_trend', 'UNKNOWN')
+            vol_emoji = VOLUME_EMOJI.get(vol_trend, '❓')
+            print(f"{vol_emoji} Volume Trend: {vol_trend}")
+
         # Red flags
         red_flags = data.get('red_flags', [])
         if red_flags:
@@ -274,8 +545,14 @@ class MemecoinAnalyzer:
         else:
             print(f"\n✅ No major red flags detected!")
 
-    def get_user_decision(self, call_id: int, contract_address: str, data: dict):
-        """Get and record user's trading decision."""
+    def get_user_decision(self, call_id: int, contract_address: str, data: TokenData) -> None:
+        """Get and record user's trading decision.
+
+        Args:
+            call_id: Database ID of the call
+            contract_address: Token contract address
+            data: Token data dictionary
+        """
         print(f"\n🤔 YOUR DECISION:")
 
         # Get decision
@@ -357,8 +634,8 @@ class MemecoinAnalyzer:
             entry_timestamp=entry_timestamp
         )
 
-    def view_source_stats(self):
-        """Display statistics for all sources."""
+    def view_source_stats(self) -> None:
+        """Display statistics for all tracked sources."""
         print("\n" + "━"*60)
         print("📊 SOURCE PERFORMANCE STATISTICS")
         print("━"*60)
@@ -383,7 +660,7 @@ class MemecoinAnalyzer:
             rug_rate = source['rug_rate'] * 100
 
             # Add tier emoji
-            tier_emoji = {'S': '🏆', 'A': '🥇', 'B': '🥈', 'C': '🥉'}.get(tier, '📊')
+            tier_emoji = self.get_tier_emoji(tier)
 
             # Format win rate: Show N/A if no trades, otherwise show percentage
             if traded == 0:
@@ -393,7 +670,7 @@ class MemecoinAnalyzer:
 
             print(f"{tier_emoji} {tier:<4} {name:<25} {total:<8} {traded:<8} {win_rate_str:<8} {hit_rate:>6.1f}% {avg_gain:>10.1f}% {rug_rate:>6.1f}%")
 
-    def view_watchlist(self):
+    def view_watchlist(self) -> None:
         """Display performance of all tokens in watchlist."""
         print("\n" + "━"*60)
         print("👀 WATCHLIST PERFORMANCE")
@@ -470,7 +747,6 @@ class MemecoinAnalyzer:
                 print(f"    {liq_indicator} Current Liquidity: {self.format_currency(current_liquidity)} ({liq_change:+.1f}%)")
 
             # Decision info
-            from datetime import datetime
             decision_time = datetime.fromisoformat(token['timestamp_decision'])
             days_ago = (datetime.now() - decision_time).days
             hours_ago = (datetime.now() - decision_time).seconds // 3600
@@ -521,7 +797,7 @@ class MemecoinAnalyzer:
         print(f"\n💡 Tip: Tokens showing strong gains may be good entry opportunities!")
         print(f"💡 To remove from watchlist, use option [9] Remove from watchlist")
 
-    def view_open_positions(self):
+    def view_open_positions(self) -> None:
         """Display all open trading positions with current performance."""
         print("\n" + "="*70)
         print("📈 OPEN POSITIONS")
@@ -682,7 +958,7 @@ class MemecoinAnalyzer:
         print(f"   • Use [8] Record exit to close a position")
         print(f"   • Run 'python3 performance_tracker.py' to update max gain/loss")
 
-    def convert_watch_to_trade(self):
+    def convert_watch_to_trade(self) -> None:
         """Convert a WATCH decision to TRADE and record entry."""
         print("\n" + "━"*60)
         print("📈 CONVERT WATCH TO TRADE")
@@ -828,7 +1104,7 @@ class MemecoinAnalyzer:
         print(f"\n💡 Original call price preserved in initial_snapshot")
         print(f"💡 Track exit using option [6] Record exit")
 
-    def remove_from_watchlist(self):
+    def remove_from_watchlist(self) -> None:
         """Remove a token from the watchlist."""
         print("\n" + "━"*60)
         print("🗑️  REMOVE FROM WATCHLIST")
@@ -890,7 +1166,7 @@ class MemecoinAnalyzer:
 
         print(f"\n✅ ${selected_token['token_symbol']} removed from watchlist")
 
-    def manage_tracked_wallets(self):
+    def manage_tracked_wallets(self) -> None:
         """Manage smart money tracked wallets."""
         while True:
             print("\n" + "━"*60)
@@ -919,7 +1195,7 @@ class MemecoinAnalyzer:
             else:
                 print("⚠️  Invalid choice. Please enter 1-5.")
 
-    def add_wallet(self):
+    def add_wallet(self) -> None:
         """Add a new tracked wallet."""
         print("\n" + "─"*60)
         print("➕ ADD TRACKED WALLET")
@@ -943,7 +1219,7 @@ class MemecoinAnalyzer:
         else:
             print(f"\n⚠️  Wallet already exists in database")
 
-    def remove_wallet(self):
+    def remove_wallet(self) -> None:
         """Remove a tracked wallet."""
         print("\n" + "─"*60)
         print("❌ REMOVE TRACKED WALLET")
@@ -959,7 +1235,7 @@ class MemecoinAnalyzer:
         else:
             print(f"\n⚠️  Wallet not found in database")
 
-    def view_all_wallets(self):
+    def view_all_wallets(self) -> None:
         """View all tracked wallets."""
         print("\n" + "━"*60)
         print("💰 TRACKED SMART MONEY WALLETS")
@@ -977,7 +1253,7 @@ class MemecoinAnalyzer:
 
         for wallet in wallets:
             tier = wallet['tier']
-            tier_emoji = {'S': '🏆', 'A': '🥇', 'B': '🥈', 'C': '🥉'}.get(tier, '📊')
+            tier_emoji = self.get_tier_emoji(tier)
             name = wallet['wallet_name'][:19]
             win_rate = wallet['win_rate'] * 100
             avg_gain = wallet['avg_gain']
@@ -987,7 +1263,7 @@ class MemecoinAnalyzer:
 
         print("\n💡 Tip: Update wallet performance manually using database methods")
 
-    def import_wallets(self):
+    def import_wallets(self) -> None:
         """Import wallets from a JSON file."""
         print("\n" + "─"*60)
         print("📥 IMPORT WALLETS FROM FILE")
@@ -999,7 +1275,6 @@ class MemecoinAnalyzer:
             return
 
         try:
-            import json
             with open(file_path, 'r') as f:
                 wallets = json.load(f)
 
@@ -1018,7 +1293,7 @@ class MemecoinAnalyzer:
         except Exception as e:
             print(f"\n❌ Error importing wallets: {e}")
 
-    def add_source_to_existing_token(self):
+    def add_source_to_existing_token(self) -> None:
         """Add source(s) to an existing token."""
         print("\n" + "━"*60)
         print("➕ ADD SOURCE TO EXISTING TOKEN")
@@ -1086,7 +1361,7 @@ class MemecoinAnalyzer:
                 self.db.update_source_performance(src)
         print("✅ Source stats updated")
 
-    def record_exit_trade(self):
+    def record_exit_trade(self) -> None:
         """Record exit from a trade."""
         print("\n" + "━"*60)
         print("💰 RECORD EXIT")
@@ -1102,7 +1377,6 @@ class MemecoinAnalyzer:
         # Display open trades
         print(f"\n📋 Open trades ({len(open_trades)}):\n")
         for i, trade in enumerate(open_trades, 1):
-            from datetime import datetime
             entry_time = datetime.fromisoformat(trade['timestamp_decision'])
             days_ago = (datetime.now() - entry_time).days
             hours_ago = ((datetime.now() - entry_time).seconds // 3600) if days_ago == 0 else 0
@@ -1155,7 +1429,7 @@ class MemecoinAnalyzer:
         else:
             print("❌ Failed to record exit")
 
-    def run(self):
+    def run(self) -> None:
         """Main application loop."""
         self.print_header()
 
@@ -1189,16 +1463,35 @@ class MemecoinAnalyzer:
                 print("⚠️  Invalid choice. Please enter 0-9.")
 
 
-def main():
+def main() -> None:
     """Main entry point."""
     try:
+        logger.info("Starting Memecoin Analyzer")
         analyzer = MemecoinAnalyzer()
         analyzer.run()
     except KeyboardInterrupt:
+        logger.info("Application interrupted by user")
         print("\n\n👋 Interrupted. Goodbye!")
         sys.exit(0)
+    except DatabaseError as e:
+        logger.error(f"Database error: {e}", exc_info=True)
+        print(f"\n❌ Database error: {e.user_message}")
+        print("💡 Check if the database file exists and is not corrupted.")
+        sys.exit(1)
+    except APIError as e:
+        logger.error(f"API error: {e}", exc_info=True)
+        print(f"\n❌ API error: {e.user_message}")
+        print("💡 Check your internet connection and API keys.")
+        sys.exit(1)
+    except AnalyzerError as e:
+        logger.error(f"Analyzer error: {e}", exc_info=True)
+        print(f"\n❌ Error: {e.user_message}")
+        sys.exit(1)
     except Exception as e:
-        print(f"\n❌ Error: {e}")
+        # Unexpected error - log full details, show generic message
+        logger.exception("Unexpected error occurred")
+        print(f"\n❌ An unexpected error occurred: {e}")
+        print("💡 Check analyzer.log for details.")
         sys.exit(1)
 
 
