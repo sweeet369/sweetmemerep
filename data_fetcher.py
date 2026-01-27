@@ -1,8 +1,10 @@
 import os
+import random
 import requests
 import time
 from datetime import datetime
-from typing import Dict, Any, Optional, List
+from functools import wraps
+from typing import Dict, Any, Optional, List, Callable, TypeVar
 
 # Load environment variables from .env file
 try:
@@ -17,6 +19,174 @@ from app_logger import api_logger, log_api_call
 # API Keys
 BIRDEYE_API_KEY = os.environ.get('BIRDEYE_API_KEY')
 
+# Type variable for generic return types
+T = TypeVar('T')
+
+
+# =============================================================================
+# ERROR CLASSES - Typed errors for better handling
+# =============================================================================
+
+class APIError(Exception):
+    """Base class for all API errors."""
+    is_transient = False
+
+    def __init__(self, message: str, source: str, cause: Optional[Exception] = None):
+        super().__init__(message)
+        self.source = source  # 'birdeye', 'dexscreener', 'rugcheck'
+        self.cause = cause
+
+
+class NetworkError(APIError):
+    """Network-level errors (connection refused, DNS failures, etc.)."""
+    is_transient = True
+
+
+class TimeoutError(APIError):
+    """Request timed out - usually transient."""
+    is_transient = True
+
+
+class RateLimitError(APIError):
+    """Rate limit exceeded (429)."""
+    is_transient = True
+
+    def __init__(self, message: str, source: str, retry_after: Optional[int] = None):
+        super().__init__(message, source)
+        self.retry_after = retry_after or 60  # Default to 60 seconds
+
+
+class ServerError(APIError):
+    """Server-side errors (5xx) - often transient."""
+    is_transient = True
+
+    def __init__(self, message: str, source: str, status_code: int):
+        super().__init__(message, source)
+        self.status_code = status_code
+
+
+class ClientError(APIError):
+    """Client-side errors (4xx except 429) - NOT transient, don't retry."""
+    is_transient = False
+
+    def __init__(self, message: str, source: str, status_code: int):
+        super().__init__(message, source)
+        self.status_code = status_code
+
+
+class ParseError(APIError):
+    """Failed to parse API response - NOT transient."""
+    is_transient = False
+
+
+class NoDataError(APIError):
+    """API returned successfully but no data found - NOT transient."""
+    is_transient = False
+
+
+# =============================================================================
+# RETRY HELPERS
+# =============================================================================
+
+def is_transient_error(error: Exception) -> bool:
+    """Determine if an error is transient and should be retried."""
+    # Our typed errors know if they're transient
+    if isinstance(error, APIError):
+        return error.is_transient
+
+    # requests library errors
+    if isinstance(error, requests.exceptions.Timeout):
+        return True
+    if isinstance(error, requests.exceptions.ConnectionError):
+        return True
+
+    # Check error message for common transient patterns
+    message = str(error).lower()
+    transient_patterns = [
+        'timeout', 'timed out', 'connection refused', 'connection reset',
+        'temporary failure', 'service unavailable', 'bad gateway',
+        'gateway timeout', 'too many requests'
+    ]
+    return any(pattern in message for pattern in transient_patterns)
+
+
+def retry_with_backoff(
+    max_attempts: int = 3,
+    base_delay: float = 1.0,
+    max_delay: float = 30.0,
+    jitter: float = 1.0,
+    should_retry: Optional[Callable[[Exception], bool]] = None
+):
+    """
+    Decorator for retrying functions with exponential backoff and jitter.
+
+    Args:
+        max_attempts: Maximum number of attempts (including first try)
+        base_delay: Initial delay in seconds
+        max_delay: Maximum delay in seconds
+        jitter: Maximum random jitter to add (prevents thundering herd)
+        should_retry: Custom function to determine if error is retryable
+    """
+    def decorator(func: Callable[..., T]) -> Callable[..., T]:
+        @wraps(func)
+        def wrapper(*args, **kwargs) -> T:
+            retry_fn = should_retry or is_transient_error
+            last_error: Optional[Exception] = None
+
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    return func(*args, **kwargs)
+                except Exception as e:
+                    last_error = e
+
+                    # Don't retry if max attempts reached or error is permanent
+                    if attempt == max_attempts or not retry_fn(e):
+                        raise
+
+                    # Exponential backoff with jitter
+                    delay = min(base_delay * (2 ** (attempt - 1)), max_delay)
+                    actual_jitter = random.uniform(0, jitter)
+                    total_delay = delay + actual_jitter
+
+                    # Log retry attempt
+                    api_logger.warning(
+                        f"Retry attempt {attempt}/{max_attempts}",
+                        error=str(e),
+                        error_type=type(e).__name__,
+                        delay_seconds=round(total_delay, 2),
+                        attempt=attempt
+                    )
+
+                    time.sleep(total_delay)
+
+            # Should never reach here, but just in case
+            if last_error:
+                raise last_error
+            raise RuntimeError("Retry loop exited unexpectedly")
+
+        return wrapper
+    return decorator
+
+
+def classify_http_error(response: requests.Response, source: str) -> APIError:
+    """Convert HTTP response to appropriate typed error."""
+    status = response.status_code
+
+    if status == 429:
+        retry_after = response.headers.get('Retry-After')
+        return RateLimitError(
+            f"Rate limit exceeded for {source}",
+            source,
+            int(retry_after) if retry_after and retry_after.isdigit() else None
+        )
+    elif status >= 500:
+        return ServerError(f"{source} server error: {status}", source, status)
+    elif status >= 400:
+        return ClientError(f"{source} client error: {status}", source, status)
+
+    # Shouldn't reach here for error responses
+    return APIError(f"Unknown error from {source}: {status}", source)
+
 
 class MemecoinDataFetcher:
     """Fetches memecoin data from Birdeye (primary), DexScreener (backup), and RugCheck APIs."""
@@ -25,10 +195,40 @@ class MemecoinDataFetcher:
     DEXSCREENER_API = "https://api.dexscreener.com/latest/dex/tokens/{address}"
     RUGCHECK_API = "https://api.rugcheck.xyz/v1/tokens/{address}/report"
 
-    def __init__(self, timeout: int = 10, retry_attempts: int = 1):
+    def __init__(self, timeout: int = 10, retry_attempts: int = 2):
         """Initialize data fetcher with timeout and retry settings."""
         self.timeout = timeout
         self.retry_attempts = retry_attempts
+
+    def _make_request(self, url: str, source: str, headers: Optional[Dict] = None,
+                      params: Optional[Dict] = None) -> requests.Response:
+        """
+        Make an HTTP request with proper error classification.
+
+        Raises typed errors instead of generic exceptions so callers
+        know exactly what went wrong and whether to retry.
+        """
+        try:
+            response = requests.get(url, headers=headers, params=params, timeout=self.timeout)
+        except requests.exceptions.Timeout as e:
+            raise TimeoutError(f"{source} request timed out", source, cause=e)
+        except requests.exceptions.ConnectionError as e:
+            raise NetworkError(f"{source} connection failed: {e}", source, cause=e)
+        except requests.exceptions.RequestException as e:
+            raise APIError(f"{source} request failed: {e}", source, cause=e)
+
+        # Classify HTTP errors
+        if response.status_code >= 400:
+            raise classify_http_error(response, source)
+
+        return response
+
+    def _parse_json(self, response: requests.Response, source: str) -> Dict[str, Any]:
+        """Parse JSON response with proper error handling."""
+        try:
+            return response.json()
+        except (ValueError, KeyError) as e:
+            raise ParseError(f"{source} returned invalid JSON", source, cause=e)
 
     def fetch_birdeye_data(self, address: str) -> Optional[Dict[str, Any]]:
         """Fetch market data from Birdeye API (primary source)."""
@@ -42,18 +242,15 @@ class MemecoinDataFetcher:
         }
         params = {"address": address}
 
-        for attempt in range(self.retry_attempts + 1):
-            with log_api_call(api_logger, self.BIRDEYE_API, 'GET', token=address[:8], attempt=attempt+1) as ctx:
+        for attempt in range(1, self.retry_attempts + 1):
+            with log_api_call(api_logger, self.BIRDEYE_API, 'GET', token=address[:8], attempt=attempt) as ctx:
                 try:
-                    response = requests.get(
-                        self.BIRDEYE_API,
-                        headers=headers,
-                        params=params,
-                        timeout=self.timeout
+                    response = self._make_request(
+                        self.BIRDEYE_API, 'Birdeye', headers=headers, params=params
                     )
                     ctx['status_code'] = response.status_code
-                    response.raise_for_status()
-                    result = response.json()
+
+                    result = self._parse_json(response, 'Birdeye')
 
                     if not result.get('success') or not result.get('data'):
                         ctx['success'] = True  # API worked, just no data
@@ -87,19 +284,39 @@ class MemecoinDataFetcher:
                         'raw_data': data
                     }
 
-                except requests.exceptions.Timeout:
+                except RateLimitError as e:
+                    api_logger.warning("Birdeye rate limited",
+                        token=address[:8], retry_after=e.retry_after, attempt=attempt)
                     if attempt < self.retry_attempts:
-                        api_logger.warning("Birdeye timeout, retrying", token=address[:8], attempt=attempt+1)
-                        time.sleep(1)
+                        time.sleep(min(e.retry_after, 10))  # Wait up to 10s for rate limit
                         continue
-                    api_logger.error("Birdeye timeout after all retries", token=address[:8], attempts=self.retry_attempts+1)
                     return None
-                except requests.exceptions.RequestException as e:
-                    api_logger.error("Birdeye request failed", token=address[:8], error=str(e))
+
+                except (TimeoutError, NetworkError, ServerError) as e:
+                    # Transient errors - retry with backoff
+                    if attempt < self.retry_attempts:
+                        delay = (2 ** (attempt - 1)) + random.uniform(0, 1)
+                        api_logger.warning("Birdeye transient error, retrying",
+                            token=address[:8], error_type=type(e).__name__,
+                            error=str(e), attempt=attempt, delay=round(delay, 2))
+                        time.sleep(delay)
+                        continue
+                    api_logger.error("Birdeye failed after all retries",
+                        token=address[:8], error_type=type(e).__name__,
+                        error=str(e), attempts=self.retry_attempts)
                     return None
-                except (KeyError, ValueError) as e:
-                    api_logger.error("Birdeye data parsing failed", token=address[:8], error=str(e))
-                return None
+
+                except (ClientError, ParseError, NoDataError) as e:
+                    # Permanent errors - don't retry
+                    api_logger.error("Birdeye permanent error",
+                        token=address[:8], error_type=type(e).__name__, error=str(e))
+                    return None
+
+                except (KeyError, ValueError, TypeError) as e:
+                    # Data parsing issues - don't retry
+                    api_logger.error("Birdeye data parsing failed",
+                        token=address[:8], error=str(e), error_type=type(e).__name__)
+                    return None
 
         return None
 
@@ -107,13 +324,13 @@ class MemecoinDataFetcher:
         """Fetch market data from DexScreener API (backup source)."""
         url = self.DEXSCREENER_API.format(address=address)
 
-        for attempt in range(self.retry_attempts + 1):
-            with log_api_call(api_logger, url, 'GET', token=address[:8], attempt=attempt+1) as ctx:
+        for attempt in range(1, self.retry_attempts + 1):
+            with log_api_call(api_logger, url, 'GET', token=address[:8], attempt=attempt) as ctx:
                 try:
-                    response = requests.get(url, timeout=self.timeout)
+                    response = self._make_request(url, 'DexScreener')
                     ctx['status_code'] = response.status_code
-                    response.raise_for_status()
-                    data = response.json()
+
+                    data = self._parse_json(response, 'DexScreener')
 
                     if not data.get('pairs') or len(data['pairs']) == 0:
                         ctx['success'] = True
@@ -160,18 +377,35 @@ class MemecoinDataFetcher:
                         'raw_data': main_pair
                     }
 
-                except requests.exceptions.Timeout:
+                except RateLimitError as e:
+                    api_logger.warning("DexScreener rate limited",
+                        token=address[:8], retry_after=e.retry_after, attempt=attempt)
                     if attempt < self.retry_attempts:
-                        api_logger.warning("DexScreener timeout, retrying", token=address[:8], attempt=attempt+1)
-                        time.sleep(1)
+                        time.sleep(min(e.retry_after, 10))
                         continue
-                    api_logger.error("DexScreener timeout after all retries", token=address[:8], attempts=self.retry_attempts+1)
                     return None
-                except requests.exceptions.RequestException as e:
-                    api_logger.error("DexScreener request failed", token=address[:8], error=str(e))
+
+                except (TimeoutError, NetworkError, ServerError) as e:
+                    if attempt < self.retry_attempts:
+                        delay = (2 ** (attempt - 1)) + random.uniform(0, 1)
+                        api_logger.warning("DexScreener transient error, retrying",
+                            token=address[:8], error_type=type(e).__name__,
+                            error=str(e), attempt=attempt, delay=round(delay, 2))
+                        time.sleep(delay)
+                        continue
+                    api_logger.error("DexScreener failed after all retries",
+                        token=address[:8], error_type=type(e).__name__,
+                        error=str(e), attempts=self.retry_attempts)
                     return None
-                except (KeyError, ValueError) as e:
-                    api_logger.error("DexScreener data parsing failed", token=address[:8], error=str(e))
+
+                except (ClientError, ParseError, NoDataError) as e:
+                    api_logger.error("DexScreener permanent error",
+                        token=address[:8], error_type=type(e).__name__, error=str(e))
+                    return None
+
+                except (KeyError, ValueError, TypeError) as e:
+                    api_logger.error("DexScreener data parsing failed",
+                        token=address[:8], error=str(e), error_type=type(e).__name__)
                     return None
 
         return None
@@ -180,13 +414,13 @@ class MemecoinDataFetcher:
         """Fetch security data from RugCheck API."""
         url = self.RUGCHECK_API.format(address=address)
 
-        for attempt in range(self.retry_attempts + 1):
-            with log_api_call(api_logger, url, 'GET', token=address[:8], attempt=attempt+1) as ctx:
+        for attempt in range(1, self.retry_attempts + 1):
+            with log_api_call(api_logger, url, 'GET', token=address[:8], attempt=attempt) as ctx:
                 try:
-                    response = requests.get(url, timeout=self.timeout)
+                    response = self._make_request(url, 'RugCheck')
                     ctx['status_code'] = response.status_code
-                    response.raise_for_status()
-                    data = response.json()
+
+                    data = self._parse_json(response, 'RugCheck')
 
                     # Parse mint and freeze authority
                     mint_revoked = data.get('mintAuthority') is None or data.get('mintAuthority') == 'null'
@@ -214,18 +448,35 @@ class MemecoinDataFetcher:
                         'raw_data': data
                     }
 
-                except requests.exceptions.Timeout:
+                except RateLimitError as e:
+                    api_logger.warning("RugCheck rate limited",
+                        token=address[:8], retry_after=e.retry_after, attempt=attempt)
                     if attempt < self.retry_attempts:
-                        api_logger.warning("RugCheck timeout, retrying", token=address[:8], attempt=attempt+1)
-                        time.sleep(1)
+                        time.sleep(min(e.retry_after, 10))
                         continue
-                    api_logger.error("RugCheck timeout after all retries", token=address[:8], attempts=self.retry_attempts+1)
                     return None
-                except requests.exceptions.RequestException as e:
-                    api_logger.error("RugCheck request failed", token=address[:8], error=str(e))
+
+                except (TimeoutError, NetworkError, ServerError) as e:
+                    if attempt < self.retry_attempts:
+                        delay = (2 ** (attempt - 1)) + random.uniform(0, 1)
+                        api_logger.warning("RugCheck transient error, retrying",
+                            token=address[:8], error_type=type(e).__name__,
+                            error=str(e), attempt=attempt, delay=round(delay, 2))
+                        time.sleep(delay)
+                        continue
+                    api_logger.error("RugCheck failed after all retries",
+                        token=address[:8], error_type=type(e).__name__,
+                        error=str(e), attempts=self.retry_attempts)
                     return None
-                except (KeyError, ValueError) as e:
-                    api_logger.error("RugCheck data parsing failed", token=address[:8], error=str(e))
+
+                except (ClientError, ParseError, NoDataError) as e:
+                    api_logger.error("RugCheck permanent error",
+                        token=address[:8], error_type=type(e).__name__, error=str(e))
+                    return None
+
+                except (KeyError, ValueError, TypeError) as e:
+                    api_logger.error("RugCheck data parsing failed",
+                        token=address[:8], error=str(e), error_type=type(e).__name__)
                     return None
 
         return None
@@ -631,14 +882,18 @@ class MemecoinDataFetcher:
 
         # Fall back to DexScreener if Birdeye fails
         if not market_data:
+            api_logger.info("Birdeye unavailable, falling back to DexScreener", token=address[:8])
             print(f"⚠️  Birdeye failed, falling back to DexScreener...")
             market_data = self.fetch_dexscreener_data(address)
             data_source = "DexScreener"
 
         if not market_data:
+            api_logger.error("All market data sources failed", token=address[:8],
+                sources_tried=["Birdeye", "DexScreener"])
             print("❌ Failed to fetch market data from any source")
             return None
 
+        api_logger.info("Market data fetched successfully", token=address[:8], source=data_source)
         print(f"✅ Market data from {data_source}")
 
         # Get security data from RugCheck
