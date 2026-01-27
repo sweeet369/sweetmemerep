@@ -7,8 +7,8 @@ Normalizes all source names to lowercase.
 import sqlite3
 import os
 
-# Get database path (use relative path)
-db_path = os.path.join(os.path.dirname(__file__), 'memecoin_analyzer.db')
+# Get database path (relative to project root, one level up from scripts/)
+db_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'memecoin_analyzer.db')
 
 def main():
     conn = sqlite3.connect(db_path)

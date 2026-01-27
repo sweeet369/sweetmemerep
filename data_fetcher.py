@@ -1,4 +1,3 @@
-import os
 import random
 import requests
 import time
@@ -6,18 +5,11 @@ from datetime import datetime
 from functools import wraps
 from typing import Dict, Any, Optional, List, Callable, TypeVar
 
-# Load environment variables from .env file
-try:
-    from dotenv import load_dotenv
-    load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env'))
-except ImportError:
-    pass
-
 # Import structured logging
 from app_logger import api_logger, log_api_call
 
-# API Keys
-BIRDEYE_API_KEY = os.environ.get('BIRDEYE_API_KEY')
+# Import centralized config
+from config import BIRDEYE_API_KEY
 
 # Type variable for generic return types
 T = TypeVar('T')

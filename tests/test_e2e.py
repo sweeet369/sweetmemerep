@@ -2,6 +2,8 @@
 """
 End-to-end test of the memecoin analyzer system
 """
+import sys, os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from database import MemecoinDatabase
 from data_fetcher import MemecoinDataFetcher

@@ -21,8 +21,8 @@ from datetime import datetime
 from functools import wraps
 from typing import Any, Callable, Generator
 
-# Log level from environment or default to INFO
-LOG_LEVEL = os.environ.get('LOG_LEVEL', 'INFO').upper()
+# Import centralized config
+from config import LOG_LEVEL
 
 # Sensitive patterns to redact
 SENSITIVE_PATTERNS = [

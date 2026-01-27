@@ -3,6 +3,8 @@
 Fix Gain Cap Script
 Caps all max_gain_observed and max_loss_observed values at -100% minimum.
 """
+import sys, os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from database import MemecoinDatabase
 

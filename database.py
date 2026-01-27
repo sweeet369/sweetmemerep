@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 from datetime import datetime
 from typing import Optional, Dict, Any, List, TYPE_CHECKING
 
@@ -12,22 +11,8 @@ if TYPE_CHECKING:
 # Import structured logging
 from app_logger import db_logger, log_db_operation
 
-# Load environment variables from .env file (if it exists)
-try:
-    from dotenv import load_dotenv
-    load_dotenv(os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env'))
-except ImportError:
-    pass  # dotenv not installed, will use environment variables directly
-
-
-# Constants for source performance calculations
-HIT_THRESHOLD = 50.0  # Minimum gain % to count as hit
-
-# Default database path - in the same directory as this script (for SQLite)
-DEFAULT_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "memecoin_analyzer.db")
-
-# Check if we should use PostgreSQL (Supabase) or SQLite
-DATABASE_URL = os.environ.get('DATABASE_URL')
+# Import centralized config
+from config import DATABASE_URL, DEFAULT_DB_PATH, HIT_THRESHOLD
 
 # Connection pool for PostgreSQL (initialized lazily)
 _pg_connection_pool = None

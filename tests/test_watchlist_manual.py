@@ -2,6 +2,8 @@
 """
 Manually create watchlist demo data (without API calls)
 """
+import sys, os
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from database import MemecoinDatabase
 from datetime import datetime

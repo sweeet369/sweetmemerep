@@ -14,6 +14,12 @@ from typing import Any, Generic, TypeVar
 
 from database import MemecoinDatabase
 from data_fetcher import MemecoinDataFetcher
+from display import (
+    display_analysis, format_currency, get_safety_rating, get_tier_emoji,
+    print_header, print_menu,
+    TIER_EMOJI, DEFAULT_TIER_EMOJI, SAFETY_THRESHOLDS,
+    HONEYPOT_EMOJI, PRESSURE_EMOJI, MOMENTUM_EMOJI, VOLUME_EMOJI, CONCENTRATION_EMOJI,
+)
 
 # =============================================================================
 # LOGGING SETUP
@@ -33,7 +39,6 @@ logger = logging.getLogger(__name__)
 # =============================================================================
 
 T = TypeVar('T')
-SafetyRating = tuple[str, str]  # (rating_text, emoji)
 TokenData = dict[str, Any]
 WalletInfo = dict[str, Any]
 
@@ -52,63 +57,6 @@ class Result(Generic[T]):
     @classmethod
     def err(cls, error: str) -> Result[T]:
         return cls(success=False, error=error)
-
-
-# =============================================================================
-# CONSTANTS
-# =============================================================================
-
-TIER_EMOJI: dict[str, str] = {
-    'S': '🏆',
-    'A': '🥇',
-    'B': '🥈',
-    'C': '🥉',
-}
-DEFAULT_TIER_EMOJI = '📊'
-
-SAFETY_THRESHOLDS = {
-    'GOOD': 8.0,
-    'MODERATE': 6.0,
-    'RISKY': 4.0,
-}
-
-HONEYPOT_EMOJI = {
-    'HIGH': '🚨',
-    'MEDIUM': '⚠️',
-    'LOW': '✅',
-}
-
-PRESSURE_EMOJI = {
-    'STRONG BUY': '🟢🟢',
-    'BUY': '🟢',
-    'NEUTRAL': '⚪',
-    'SELL': '🔴',
-    'STRONG SELL': '🔴🔴',
-}
-
-MOMENTUM_EMOJI = {
-    'STRONG UP': '🚀',
-    'UP': '📈',
-    'NEUTRAL': '➡️',
-    'DOWN': '📉',
-    'STRONG DOWN': '💥',
-}
-
-VOLUME_EMOJI = {
-    'VERY HIGH': '🔥',
-    'HIGH': '📊',
-    'NORMAL': '➡️',
-    'LOW': '📉',
-    'VERY LOW': '❄️',
-}
-
-CONCENTRATION_EMOJI = {
-    'CRITICAL': '🔴',
-    'HIGH': '🟠',
-    'MODERATE': '🟡',
-    'LOW': '✅',
-    'HEALTHY': '✅',
-}
 
 
 # =============================================================================
@@ -197,74 +145,6 @@ class MemecoinAnalyzer:
         self.fetcher: MemecoinDataFetcher = MemecoinDataFetcher()
         logger.info("MemecoinAnalyzer initialized")
 
-    def print_header(self) -> None:
-        """Print the main header."""
-        print("\n" + "="*60)
-        print("🪙  MEMECOIN ANALYZER")
-        print("="*60)
-
-    def print_menu(self) -> None:
-        """Print the main menu."""
-        print("\nOptions:")
-        print("  [1] Analyze new call")
-        print("  [2] View source stats")
-        print("  [3] Watchlist performance")
-        print("  [4] Manage tracked wallets")
-        print("  [5] Add source to existing token")
-        print("  [6] View open positions")
-        print("  [7] Convert WATCH to TRADE")
-        print("  [8] Record exit")
-        print("  [9] Remove from watchlist")
-        print("  [0] Exit")
-        print()
-
-    def get_safety_rating(self, score: float) -> SafetyRating:
-        """Get safety rating text and emoji based on score.
-
-        Args:
-            score: Safety score from 0-10
-
-        Returns:
-            Tuple of (rating_text, emoji)
-        """
-        if score >= SAFETY_THRESHOLDS['GOOD']:
-            return "GOOD", "🟢"
-        elif score >= SAFETY_THRESHOLDS['MODERATE']:
-            return "MODERATE", "🟡"
-        elif score >= SAFETY_THRESHOLDS['RISKY']:
-            return "RISKY", "🟠"
-        else:
-            return "DANGEROUS", "🔴"
-
-    def format_currency(self, value: float | None) -> str:
-        """Format currency with appropriate suffix (K, M).
-
-        Args:
-            value: Dollar amount or None
-
-        Returns:
-            Formatted string like "$1.5M" or "N/A"
-        """
-        if value is None:
-            return "N/A"
-        if value >= 1_000_000:
-            return f"${value/1_000_000:.2f}M"
-        elif value >= 1_000:
-            return f"${value/1_000:.1f}K"
-        else:
-            return f"${value:.2f}"
-
-    def get_tier_emoji(self, tier: str) -> str:
-        """Get emoji for tier rating.
-
-        Args:
-            tier: Tier letter (S, A, B, C)
-
-        Returns:
-            Emoji string
-        """
-        return TIER_EMOJI.get(tier, DEFAULT_TIER_EMOJI)
-
     def analyze_new_call(self) -> None:
         """Analyze a new memecoin call."""
         print("\n" + "━"*60)
@@ -334,7 +214,7 @@ class MemecoinAnalyzer:
         self.db.insert_snapshot(call_id, data)
 
         # Display analysis
-        self.display_analysis(token_symbol, token_name, source, data)
+        display_analysis(token_symbol, token_name, source, data)
 
         # Get user decision
         self.get_user_decision(call_id, contract_address, data)
@@ -345,205 +225,6 @@ class MemecoinAnalyzer:
             self.db.update_source_performance(src)
 
         print(f"\n✅ Saved to database (Call ID: {call_id})")
-
-    def display_analysis(self, symbol: str, name: str, source: str, data: TokenData) -> None:
-        """Display the analysis results.
-
-        Args:
-            symbol: Token symbol (e.g., "PEPE")
-            name: Token name (e.g., "Pepe Coin")
-            source: Source of the call
-            data: Token data dictionary from fetcher
-        """
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
-
-        print("\n" + "━"*60)
-        print(f"🪙  TOKEN: ${symbol} ({name})")
-        print(f"📍 Source: {source}")
-        print(f"⏰ Analyzed: {timestamp}")
-        print("━"*60)
-
-        # Safety checks
-        safety_score = data.get('safety_score', 0)
-        rating, emoji = self.get_safety_rating(safety_score)
-
-        print(f"\n🔒 SAFETY CHECKS:")
-        print(f"{emoji} Safety Score: {safety_score:.1f}/10 ({rating})")
-
-        # Honeypot risk indicator
-        honeypot_risk = data.get('honeypot_risk', 'UNKNOWN')
-        hp_emoji = HONEYPOT_EMOJI.get(honeypot_risk, '❓')
-        if honeypot_risk == 'HIGH':
-            print(f"{hp_emoji} Honeypot Risk: HIGH - May not be sellable!")
-        elif honeypot_risk == 'MEDIUM':
-            print(f"{hp_emoji}  Honeypot Risk: MEDIUM - Proceed with caution")
-        elif honeypot_risk == 'LOW':
-            print(f"{hp_emoji} Honeypot Risk: LOW")
-
-        mint_revoked = data.get('mint_authority_revoked')
-        freeze_revoked = data.get('freeze_authority_revoked')
-
-        if mint_revoked == 1:
-            print("✅ Mint Authority: REVOKED")
-        elif mint_revoked == 0:
-            print("❌ Mint Authority: ACTIVE")
-        else:
-            print("⚠️  Mint Authority: UNKNOWN")
-
-        if freeze_revoked == 1:
-            print("✅ Freeze Authority: REVOKED")
-        elif freeze_revoked == 0:
-            print("❌ Freeze Authority: ACTIVE")
-        else:
-            print("⚠️  Freeze Authority: UNKNOWN")
-
-        # Token taxes
-        buy_tax = data.get('estimated_buy_tax', 0)
-        sell_tax = data.get('estimated_sell_tax', 0)
-        if buy_tax > 0 or sell_tax > 0:
-            tax_emoji = "🔴" if sell_tax > 10 else "🟡" if sell_tax > 5 else "✅"
-            print(f"{tax_emoji} Token Taxes: Buy {buy_tax:.0f}% / Sell {sell_tax:.0f}%")
-
-        top_holder = data.get('top_holder_percent')
-        if top_holder is not None:
-            if top_holder > 20:
-                print(f"🔴 Top Holder: {top_holder:.1f}% (HIGH RISK)")
-            elif top_holder > 15:
-                print(f"🟡 Top Holder: {top_holder:.1f}% (moderate risk)")
-            else:
-                print(f"✅ Top Holder: {top_holder:.1f}% (acceptable)")
-        else:
-            print("⚠️  Top Holder: N/A")
-
-        # Holder distribution
-        holder_concentration = data.get('holder_concentration')
-        if holder_concentration:
-            conc_emoji = CONCENTRATION_EMOJI.get(holder_concentration, '⚪')
-            top_5_pct = data.get('top_5_pct', 0)
-            whale_count = data.get('whale_count', 0)
-            print(f"{conc_emoji} Distribution: {holder_concentration} (Top 5: {top_5_pct:.0f}%, {whale_count} whales)")
-
-        # Smart money detection
-        smart_money_wallets = data.get('smart_money_wallets', [])
-        if smart_money_wallets:
-            print(f"\n💰 SMART MONEY DETECTED:")
-            for wallet in smart_money_wallets:
-                tier = wallet['tier']
-                tier_emoji = {'S': '🟢', 'A': '🟢', 'B': '🟡', 'C': '🟠'}.get(tier, '⚪')
-                win_rate_pct = wallet['win_rate'] * 100
-                avg_gain_pct = wallet['avg_gain']
-                print(f"{tier_emoji} Wallet: {wallet['wallet_name']} ({tier}-Tier, {win_rate_pct:.0f}% win rate, avg +{avg_gain_pct:.0f}%)")
-                logger.info(f"Smart money detected: {wallet['wallet_name']} tier={tier}")
-
-            if len(smart_money_wallets) > 2:
-                others = len(smart_money_wallets) - 2
-                if others > 0:
-                    print(f"🟡 +{others} other profitable wallet(s) holding")
-
-            smart_bonus = data.get('smart_money_bonus', 0)
-            if smart_bonus > 0:
-                print(f"✨ Safety score bonus: +{smart_money_bonus:.1f} points")
-
-        # Market data
-        print(f"\n📊 MARKET DATA:")
-
-        # Display liquidity (with pool breakdown if available)
-        main_pool_liq = data.get('main_pool_liquidity')
-        total_liq = data.get('total_liquidity')
-        main_pool_dex = data.get('main_pool_dex')
-
-        if main_pool_liq and total_liq and main_pool_dex:
-            # Show detailed pool breakdown
-            print(f"💧 Main Pool ({main_pool_dex}): {self.format_currency(main_pool_liq)}")
-            if total_liq > main_pool_liq:
-                print(f"💧 Total Liquidity: {self.format_currency(total_liq)}")
-        else:
-            # Fallback to old format
-            liquidity = data.get('liquidity_usd', 0)
-            print(f"💧 Liquidity: {self.format_currency(liquidity)}")
-
-        holders = data.get('holder_count')
-        if holders is not None and holders > 0:
-            print(f"👥 Holders: {holders:,}")
-        else:
-            print(f"👥 Holders: N/A")
-
-        token_age = data.get('token_age_hours', 0)
-        if token_age >= 24:
-            print(f"⏰ Age: {token_age/24:.1f} days")
-        else:
-            print(f"⏰ Age: {token_age:.1f} hours")
-
-        volume = data.get('volume_24h', 0)
-        print(f"📈 24h Volume: {self.format_currency(volume)}")
-
-        market_cap = data.get('market_cap')
-        if market_cap:
-            print(f"💰 Market Cap: {self.format_currency(market_cap)}")
-
-        price = data.get('price_usd')
-        if price:
-            print(f"💵 Price: ${price:.10f}")
-
-        # Price changes
-        price_change_5m = data.get('price_change_5m')
-        price_change_1h = data.get('price_change_1h')
-        price_change_24h = data.get('price_change_24h')
-
-        if any([price_change_5m, price_change_1h, price_change_24h]):
-            print(f"\n📈 PRICE CHANGES:")
-            if price_change_5m is not None:
-                indicator = "📈" if price_change_5m > 0 else "📉" if price_change_5m < 0 else "➡️"
-                print(f"{indicator} 5m: {price_change_5m:+.2f}%")
-            if price_change_1h is not None:
-                indicator = "📈" if price_change_1h > 0 else "📉" if price_change_1h < 0 else "➡️"
-                print(f"{indicator} 1h: {price_change_1h:+.2f}%")
-            if price_change_24h is not None:
-                indicator = "📈" if price_change_24h > 0 else "📉" if price_change_24h < 0 else "➡️"
-                print(f"{indicator} 24h: {price_change_24h:+.2f}%")
-
-        # Buy/Sell activity
-        buy_count = data.get('buy_count_24h')
-        sell_count = data.get('sell_count_24h')
-        if buy_count is not None and sell_count is not None:
-            total_txns = buy_count + sell_count
-            buy_ratio = (buy_count / total_txns * 100) if total_txns > 0 else 0
-            print(f"\n💱 24H ACTIVITY:")
-            print(f"🟢 Buys: {buy_count} ({buy_ratio:.1f}%)")
-            print(f"🔴 Sells: {sell_count} ({100-buy_ratio:.1f}%)")
-
-        # Momentum indicators
-        momentum_score = data.get('momentum_score')
-        if momentum_score is not None:
-            print(f"\n📊 MOMENTUM ANALYSIS:")
-
-            # Overall momentum score
-            mom_emoji = "🚀" if momentum_score >= 7 else "📈" if momentum_score >= 5.5 else "📉" if momentum_score < 4 else "➡️"
-            print(f"{mom_emoji} Momentum Score: {momentum_score:.1f}/10")
-
-            # Buy/sell pressure
-            pressure = data.get('buy_sell_pressure', 'NEUTRAL')
-            pressure_emoji = PRESSURE_EMOJI.get(pressure, '⚪')
-            print(f"{pressure_emoji} Buy/Sell Pressure: {pressure}")
-
-            # Price momentum
-            price_mom = data.get('price_momentum', 'NEUTRAL')
-            price_emoji = MOMENTUM_EMOJI.get(price_mom, '➡️')
-            print(f"{price_emoji} Price Momentum: {price_mom}")
-
-            # Volume trend
-            vol_trend = data.get('volume_trend', 'UNKNOWN')
-            vol_emoji = VOLUME_EMOJI.get(vol_trend, '❓')
-            print(f"{vol_emoji} Volume Trend: {vol_trend}")
-
-        # Red flags
-        red_flags = data.get('red_flags', [])
-        if red_flags:
-            print(f"\n⚠️  RED FLAGS:")
-            for flag in red_flags:
-                print(f"   {flag}")
-        else:
-            print(f"\n✅ No major red flags detected!")
 
     def get_user_decision(self, call_id: int, contract_address: str, data: TokenData) -> None:
         """Get and record user's trading decision.
@@ -660,7 +341,7 @@ class MemecoinAnalyzer:
             rug_rate = source['rug_rate'] * 100
 
             # Add tier emoji
-            tier_emoji = self.get_tier_emoji(tier)
+            tier_emoji = get_tier_emoji(tier)
 
             # Format win rate: Show N/A if no trades, otherwise show percentage
             if traded == 0:
@@ -724,19 +405,19 @@ class MemecoinAnalyzer:
 
             # Safety and entry info
             safety_score = token['safety_score'] or 0
-            rating, emoji = self.get_safety_rating(safety_score)
+            rating, emoji = get_safety_rating(safety_score)
             print(f"    {emoji} Safety Score: {safety_score:.1f}/10 ({rating})")
-            print(f"    💧 Entry Liquidity: {self.format_currency(token['entry_liquidity'])}")
+            print(f"    💧 Entry Liquidity: {format_currency(token['entry_liquidity'])}")
 
             # Market cap info
             initial_mcap = token.get('initial_mcap')
             current_mcap = token.get('current_mcap')
             if initial_mcap:
-                print(f"    💰 Initial MCap: {self.format_currency(initial_mcap)}")
+                print(f"    💰 Initial MCap: {format_currency(initial_mcap)}")
             if current_mcap:
                 mcap_change = ((current_mcap - initial_mcap) / initial_mcap * 100) if initial_mcap else 0
                 mcap_indicator = "📈" if mcap_change > 0 else "📉" if mcap_change < 0 else "➡️"
-                print(f"    {mcap_indicator} Current MCap: {self.format_currency(current_mcap)} ({mcap_change:+.1f}%)")
+                print(f"    {mcap_indicator} Current MCap: {format_currency(current_mcap)} ({mcap_change:+.1f}%)")
 
             # Liquidity tracking
             entry_liquidity = token.get('entry_liquidity')
@@ -744,7 +425,7 @@ class MemecoinAnalyzer:
             if current_liquidity and entry_liquidity:
                 liq_change = ((current_liquidity - entry_liquidity) / entry_liquidity * 100) if entry_liquidity else 0
                 liq_indicator = "📈" if liq_change > 0 else "📉" if liq_change < 0 else "➡️"
-                print(f"    {liq_indicator} Current Liquidity: {self.format_currency(current_liquidity)} ({liq_change:+.1f}%)")
+                print(f"    {liq_indicator} Current Liquidity: {format_currency(current_liquidity)} ({liq_change:+.1f}%)")
 
             # Decision info
             decision_time = datetime.fromisoformat(token['timestamp_decision'])
@@ -914,7 +595,7 @@ class MemecoinAnalyzer:
                 liq_change = ((current_liquidity - pos['entry_liquidity']) / pos['entry_liquidity'] * 100) if pos['entry_liquidity'] else 0
                 liq_emoji = "🟢" if liq_change > 0 else "🔴" if liq_change < -30 else "🟡"
                 print(f"\n    💧 LIQUIDITY:")
-                print(f"       {liq_emoji} Current: {self.format_currency(current_liquidity)} ({liq_change:+.1f}%)")
+                print(f"       {liq_emoji} Current: {format_currency(current_liquidity)} ({liq_change:+.1f}%)")
 
             # Trade details
             print(f"\n    📝 DETAILS:")
@@ -1253,7 +934,7 @@ class MemecoinAnalyzer:
 
         for wallet in wallets:
             tier = wallet['tier']
-            tier_emoji = self.get_tier_emoji(tier)
+            tier_emoji = get_tier_emoji(tier)
             name = wallet['wallet_name'][:19]
             win_rate = wallet['win_rate'] * 100
             avg_gain = wallet['avg_gain']
@@ -1431,10 +1112,10 @@ class MemecoinAnalyzer:
 
     def run(self) -> None:
         """Main application loop."""
-        self.print_header()
+        print_header()
 
         while True:
-            self.print_menu()
+            print_menu()
             choice = input("Your choice: ").strip()
 
             if choice == '1':
