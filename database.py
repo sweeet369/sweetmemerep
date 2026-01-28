@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+import math
+from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, List, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -95,6 +96,17 @@ class MemecoinDatabase:
             self.db_type = 'sqlite'
             self.create_tables()
 
+    @staticmethod
+    def normalize_source_name(source_name: str) -> str:
+        """Normalize a single source name for consistent storage/matching."""
+        return source_name.strip().lower()
+
+    @classmethod
+    def normalize_sources(cls, sources: str) -> str:
+        """Normalize comma-separated source list for storage."""
+        parts = [cls.normalize_source_name(s) for s in sources.split(',') if s.strip()]
+        return ', '.join(parts)
+
     def _placeholder(self) -> str:
         """Return the correct placeholder for the database type."""
         return '%s' if self.db_type == 'postgres' else '?'
@@ -181,6 +193,10 @@ class MemecoinDatabase:
                 main_pool_liquidity REAL,
                 total_liquidity REAL,
                 main_pool_dex TEXT,
+                volume_liquidity_ratio REAL,
+                buy_sell_ratio REAL,
+                momentum_score REAL,
+                sol_price_usd REAL,
                 FOREIGN KEY (call_id) REFERENCES calls_received (call_id)
             )
         ''')
@@ -222,6 +238,32 @@ class MemecoinDatabase:
                 checkpoint_type TEXT,
                 max_price_since_entry REAL,
                 min_price_since_entry REAL,
+                price_15m_later REAL,
+                price_30m_later REAL,
+                time_to_max_gain_hours REAL,
+                time_to_rug_hours REAL,
+                max_gain_timestamp TEXT,
+                FOREIGN KEY (call_id) REFERENCES calls_received (call_id)
+            )
+        ''')
+
+        self.cursor.execute('''
+            CREATE TABLE IF NOT EXISTS performance_history (
+                history_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                call_id INTEGER NOT NULL,
+                timestamp TEXT NOT NULL,
+                decision_status TEXT NOT NULL,
+                reference_price REAL,
+                price_usd REAL,
+                liquidity_usd REAL,
+                total_liquidity REAL,
+                market_cap REAL,
+                gain_loss_pct REAL,
+                price_change_pct REAL,
+                liquidity_change_pct REAL,
+                market_cap_change_pct REAL,
+                token_still_alive TEXT,
+                rug_pull_occurred TEXT,
                 FOREIGN KEY (call_id) REFERENCES calls_received (call_id)
             )
         ''')
@@ -237,7 +279,13 @@ class MemecoinDatabase:
                 rug_rate REAL DEFAULT 0.0,
                 hit_rate REAL DEFAULT 0.0,
                 tier TEXT DEFAULT 'C',
-                last_updated TEXT NOT NULL
+                last_updated TEXT NOT NULL,
+                avg_time_to_max_gain_hours REAL,
+                median_max_gain REAL,
+                baseline_alpha REAL,
+                confidence_score REAL,
+                recent_hit_rate REAL,
+                sample_size INTEGER DEFAULT 0
             )
         ''')
 
@@ -263,6 +311,8 @@ class MemecoinDatabase:
         self.cursor.execute('CREATE INDEX IF NOT EXISTS idx_calls_received_source ON calls_received(source)')
         self.cursor.execute('CREATE INDEX IF NOT EXISTS idx_calls_received_contract ON calls_received(contract_address)')
         self.cursor.execute('CREATE INDEX IF NOT EXISTS idx_tracked_wallets_address ON tracked_wallets(wallet_address)')
+        self.cursor.execute('CREATE INDEX IF NOT EXISTS idx_performance_history_call_id ON performance_history(call_id)')
+        self.cursor.execute('CREATE INDEX IF NOT EXISTS idx_performance_history_timestamp ON performance_history(timestamp)')
 
         self.conn.commit()
         db_logger.info("SQLite tables and indexes created/verified")
@@ -290,6 +340,7 @@ class MemecoinDatabase:
                     source: str, blockchain: str = "Solana") -> int:
         """Insert a new call received record."""
         timestamp = datetime.now().isoformat()
+        source = self.normalize_sources(source) if source else source
 
         try:
             if self.db_type == 'postgres':
@@ -331,6 +382,19 @@ class MemecoinDatabase:
         """Insert initial snapshot data."""
         timestamp = datetime.now().isoformat()
 
+        # Calculate volume/liquidity ratio
+        volume = data.get('volume_24h') or 0
+        liquidity = data.get('liquidity_usd') or 0
+        volume_liquidity_ratio = (volume / liquidity) if liquidity > 0 else None
+
+        # Get buy/sell ratio from data
+        buy_count = data.get('buy_count_24h')
+        sell_count = data.get('sell_count_24h')
+        if buy_count is not None and sell_count is not None and (buy_count + sell_count) > 0:
+            buy_sell_ratio = buy_count / (buy_count + sell_count)
+        else:
+            buy_sell_ratio = data.get('buy_sell_ratio')
+
         params = (
             call_id,
             timestamp,
@@ -358,7 +422,11 @@ class MemecoinDatabase:
             data.get('liquidity_locked_percent'),
             data.get('main_pool_liquidity'),
             data.get('total_liquidity'),
-            data.get('main_pool_dex')
+            data.get('main_pool_dex'),
+            volume_liquidity_ratio,
+            buy_sell_ratio,
+            data.get('momentum_score'),
+            data.get('sol_price_usd'),
         )
 
         if self.db_type == 'postgres':
@@ -371,8 +439,9 @@ class MemecoinDatabase:
                     price_vs_atl_percent, buy_count_24h, sell_count_24h,
                     price_change_5m, price_change_1h, price_change_24h,
                     all_time_high, all_time_low, liquidity_locked_percent,
-                    main_pool_liquidity, total_liquidity, main_pool_dex
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    main_pool_liquidity, total_liquidity, main_pool_dex,
+                    volume_liquidity_ratio, buy_sell_ratio, momentum_score, sol_price_usd
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 RETURNING snapshot_id
             ''', params)
             result = self._fetchone()
@@ -388,8 +457,9 @@ class MemecoinDatabase:
                     price_vs_atl_percent, buy_count_24h, sell_count_24h,
                     price_change_5m, price_change_1h, price_change_24h,
                     all_time_high, all_time_low, liquidity_locked_percent,
-                    main_pool_liquidity, total_liquidity, main_pool_dex
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    main_pool_liquidity, total_liquidity, main_pool_dex,
+                    volume_liquidity_ratio, buy_sell_ratio, momentum_score, sol_price_usd
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', params)
             self.conn.commit()
             return self.cursor.lastrowid
@@ -434,7 +504,7 @@ class MemecoinDatabase:
     def record_exit(self, call_id: int, exit_price: float) -> bool:
         """Record exit from a trade and calculate hold duration."""
         self._execute('''
-            SELECT timestamp_decision FROM my_decisions
+            SELECT timestamp_decision, entry_timestamp FROM my_decisions
             WHERE call_id = ? AND my_decision = 'TRADE'
         ''', (call_id,))
 
@@ -442,7 +512,8 @@ class MemecoinDatabase:
         if not result:
             return False
 
-        entry_time = datetime.fromisoformat(result['timestamp_decision'])
+        entry_time_raw = result.get('entry_timestamp') or result.get('timestamp_decision')
+        entry_time = datetime.fromisoformat(entry_time_raw)
         exit_time = datetime.now()
         hold_duration = (exit_time - entry_time).total_seconds() / 3600
 
@@ -506,7 +577,12 @@ class MemecoinDatabase:
                     rug_pull_occurred = COALESCE(?, rug_pull_occurred),
                     checkpoint_type = COALESCE(?, checkpoint_type),
                     max_price_since_entry = COALESCE(?, max_price_since_entry),
-                    min_price_since_entry = COALESCE(?, min_price_since_entry)
+                    min_price_since_entry = COALESCE(?, min_price_since_entry),
+                    price_15m_later = COALESCE(?, price_15m_later),
+                    price_30m_later = COALESCE(?, price_30m_later),
+                    time_to_max_gain_hours = COALESCE(?, time_to_max_gain_hours),
+                    time_to_rug_hours = COALESCE(?, time_to_rug_hours),
+                    max_gain_timestamp = COALESCE(?, max_gain_timestamp)
                 WHERE call_id = ?
             ''', (
                 timestamp,
@@ -523,6 +599,11 @@ class MemecoinDatabase:
                 data.get('checkpoint_type'),
                 data.get('max_price_since_entry'),
                 data.get('min_price_since_entry'),
+                data.get('price_15m_later'),
+                data.get('price_30m_later'),
+                data.get('time_to_max_gain_hours'),
+                data.get('time_to_rug_hours'),
+                data.get('max_gain_timestamp'),
                 call_id
             ))
             tracking_id = existing['tracking_id']
@@ -541,7 +622,12 @@ class MemecoinDatabase:
                 rug_occurred,
                 data.get('checkpoint_type'),
                 data.get('max_price_since_entry'),
-                data.get('min_price_since_entry')
+                data.get('min_price_since_entry'),
+                data.get('price_15m_later'),
+                data.get('price_30m_later'),
+                data.get('time_to_max_gain_hours'),
+                data.get('time_to_rug_hours'),
+                data.get('max_gain_timestamp'),
             )
 
             if self.db_type == 'postgres':
@@ -550,8 +636,10 @@ class MemecoinDatabase:
                         call_id, last_updated, price_1h_later, price_24h_later,
                         price_7d_later, price_30d_later, current_mcap, current_liquidity,
                         max_gain_observed, max_loss_observed, token_still_alive, rug_pull_occurred,
-                        checkpoint_type, max_price_since_entry, min_price_since_entry
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        checkpoint_type, max_price_since_entry, min_price_since_entry,
+                        price_15m_later, price_30m_later, time_to_max_gain_hours,
+                        time_to_rug_hours, max_gain_timestamp
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     RETURNING tracking_id
                 ''', params)
                 result = self._fetchone()
@@ -562,34 +650,98 @@ class MemecoinDatabase:
                         call_id, last_updated, price_1h_later, price_24h_later,
                         price_7d_later, price_30d_later, current_mcap, current_liquidity,
                         max_gain_observed, max_loss_observed, token_still_alive, rug_pull_occurred,
-                        checkpoint_type, max_price_since_entry, min_price_since_entry
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        checkpoint_type, max_price_since_entry, min_price_since_entry,
+                        price_15m_later, price_30m_later, time_to_max_gain_hours,
+                        time_to_rug_hours, max_gain_timestamp
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', params)
                 tracking_id = self.cursor.lastrowid
 
         self.conn.commit()
         return tracking_id
 
+    def insert_performance_history(self, call_id: int, data: Dict[str, Any]) -> int:
+        """Insert a time-series snapshot for a tracked token."""
+        timestamp = datetime.now().isoformat()
+
+        token_alive = self._to_bool(data.get('token_still_alive'))
+        rug_occurred = self._to_bool(data.get('rug_pull_occurred'))
+
+        params = (
+            call_id,
+            timestamp,
+            data.get('decision_status'),
+            data.get('reference_price'),
+            data.get('price_usd'),
+            data.get('liquidity_usd'),
+            data.get('total_liquidity'),
+            data.get('market_cap'),
+            data.get('gain_loss_pct'),
+            data.get('price_change_pct'),
+            data.get('liquidity_change_pct'),
+            data.get('market_cap_change_pct'),
+            token_alive,
+            rug_occurred,
+        )
+
+        if self.db_type == 'postgres':
+            self._execute('''
+                INSERT INTO performance_history (
+                    call_id, timestamp, decision_status, reference_price,
+                    price_usd, liquidity_usd, total_liquidity, market_cap,
+                    gain_loss_pct, price_change_pct, liquidity_change_pct, market_cap_change_pct,
+                    token_still_alive, rug_pull_occurred
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                RETURNING history_id
+            ''', params)
+            result = self._fetchone()
+            self.conn.commit()
+            return result['history_id']
+        else:
+            self._execute('''
+                INSERT INTO performance_history (
+                    call_id, timestamp, decision_status, reference_price,
+                    price_usd, liquidity_usd, total_liquidity, market_cap,
+                    gain_loss_pct, price_change_pct, liquidity_change_pct, market_cap_change_pct,
+                    token_still_alive, rug_pull_occurred
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', params)
+            self.conn.commit()
+            return self.cursor.lastrowid
+
+    def get_latest_performance_history(self, call_id: int) -> Optional[Dict[str, Any]]:
+        """Get the most recent performance history snapshot for a call."""
+        self._execute('''
+            SELECT *
+            FROM performance_history
+            WHERE call_id = ?
+            ORDER BY timestamp DESC
+            LIMIT 1
+        ''', (call_id,))
+        return self._fetchone()
+
     def update_source_performance(self, source_name: str) -> None:
         """Calculate and update source performance statistics for an individual source."""
         timestamp = datetime.now().isoformat()
-        source_name = source_name.strip()
+        source_name = self.normalize_source_name(source_name)
 
         self._execute('''
             SELECT
                 c.call_id,
+                c.timestamp_received,
                 d.my_decision,
                 d.entry_price,
                 d.actual_exit_price,
                 p.max_gain_observed,
-                p.rug_pull_occurred
+                p.rug_pull_occurred,
+                p.time_to_max_gain_hours
             FROM calls_received c
             LEFT JOIN my_decisions d ON c.call_id = d.call_id
             LEFT JOIN performance_tracking p ON c.call_id = p.call_id
-            WHERE c.source = ?
-               OR c.source LIKE ?
-               OR c.source LIKE ?
-               OR c.source LIKE ?
+            WHERE lower(c.source) = ?
+               OR lower(c.source) LIKE ?
+               OR lower(c.source) LIKE ?
+               OR lower(c.source) LIKE ?
         ''', (source_name, f'{source_name},%', f'%, {source_name}', f'%, {source_name},%'))
 
         calls = self._fetchall()
@@ -614,20 +766,109 @@ class MemecoinDatabase:
         hits = sum(1 for c in calls if c['max_gain_observed'] and c['max_gain_observed'] >= HIT_THRESHOLD)
         hit_rate = hits / total_calls if total_calls > 0 else 0.0
 
+        # --- NEW: avg_time_to_max_gain_hours ---
+        time_to_max_values = [c['time_to_max_gain_hours'] for c in calls
+                              if c.get('time_to_max_gain_hours') is not None]
+        avg_time_to_max_gain_hours = (sum(time_to_max_values) / len(time_to_max_values)) if time_to_max_values else None
+
+        # --- NEW: median_max_gain ---
+        all_gains = sorted([c['max_gain_observed'] for c in calls
+                           if c['max_gain_observed'] is not None])
+        if all_gains:
+            mid = len(all_gains) // 2
+            if len(all_gains) % 2 == 0:
+                median_max_gain = (all_gains[mid - 1] + all_gains[mid]) / 2.0
+            else:
+                median_max_gain = all_gains[mid]
+        else:
+            median_max_gain = None
+
+        # --- NEW: baseline_alpha (source avg - global avg) ---
+        self._execute('''
+            SELECT AVG(p.max_gain_observed) as global_avg
+            FROM performance_tracking p
+            WHERE p.max_gain_observed IS NOT NULL AND p.max_gain_observed > 0
+        ''')
+        global_result = self._fetchone()
+        global_avg_gain = global_result['global_avg'] if global_result and global_result['global_avg'] else 0.0
+        baseline_alpha = avg_max_gain - global_avg_gain if avg_max_gain > 0 else None
+
+        # --- NEW: confidence_score (z-test based) ---
+        confidence_score = None
+        if gains and len(gains) >= 2:
+            source_mean = avg_max_gain
+            n = len(gains)
+            # Get global std dev
+            self._execute('''
+                SELECT AVG(p.max_gain_observed) as g_avg
+                FROM performance_tracking p
+                WHERE p.max_gain_observed IS NOT NULL AND p.max_gain_observed > 0
+            ''')
+            g_result = self._fetchone()
+            g_avg = g_result['g_avg'] if g_result and g_result['g_avg'] else 0.0
+
+            # Calculate global std dev
+            self._execute('''
+                SELECT p.max_gain_observed
+                FROM performance_tracking p
+                WHERE p.max_gain_observed IS NOT NULL AND p.max_gain_observed > 0
+            ''')
+            all_global_gains = [row['max_gain_observed'] for row in self._fetchall()]
+            if all_global_gains and len(all_global_gains) >= 2:
+                global_std = math.sqrt(sum((x - g_avg) ** 2 for x in all_global_gains) / len(all_global_gains))
+                if global_std > 0:
+                    z = (source_mean - g_avg) / (global_std / math.sqrt(n))
+                    confidence_score = min(max(z / 3.0, 0.0), 1.0)
+
+        # --- NEW: recent_hit_rate (last 30 days) ---
+        cutoff = datetime.now() - timedelta(days=30)
+        cutoff_str = cutoff.isoformat()
+
+        def _is_recent(ts) -> bool:
+            if ts is None:
+                return False
+            # PostgreSQL may return datetime objects (possibly timezone-aware), SQLite returns strings
+            if isinstance(ts, datetime):
+                # Strip timezone info for comparison if needed
+                ts_naive = ts.replace(tzinfo=None) if ts.tzinfo else ts
+                return ts_naive >= cutoff
+            return str(ts) >= cutoff_str
+
+        recent_calls = [c for c in calls if _is_recent(c.get('timestamp_received'))]
+        recent_hits = sum(1 for c in recent_calls if c['max_gain_observed'] and c['max_gain_observed'] >= HIT_THRESHOLD)
+        recent_hit_rate = recent_hits / len(recent_calls) if recent_calls else None
+
+        # --- NEW: sample_size ---
+        sample_size = total_calls
+
+        # Tier calculation — factor in confidence_score, require min sample for S/A
         if avg_max_gain > 5.0 and win_rate > 0.6 and rug_rate < 0.1:
-            tier = 'S'
+            tier = 'S' if sample_size >= 10 else 'B'
         elif avg_max_gain > 3.0 and win_rate > 0.5 and rug_rate < 0.2:
-            tier = 'A'
+            tier = 'A' if sample_size >= 10 else 'B'
         elif avg_max_gain > 1.5 and win_rate > 0.4:
             tier = 'B'
         else:
             tier = 'C'
 
+        # Boost tier with high confidence
+        if confidence_score is not None and confidence_score >= 0.8 and tier == 'B' and sample_size >= 10:
+            if avg_max_gain > 3.0:
+                tier = 'A'
+
+        upsert_params = (
+            source_name, total_calls, calls_traded, win_rate, avg_max_gain,
+            rug_rate, hit_rate, tier, timestamp,
+            avg_time_to_max_gain_hours, median_max_gain, baseline_alpha,
+            confidence_score, recent_hit_rate, sample_size,
+        )
+
         if self.db_type == 'postgres':
             self._execute('''
                 INSERT INTO source_performance
-                (source_name, total_calls, calls_traded, win_rate, avg_max_gain, rug_rate, hit_rate, tier, last_updated)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (source_name, total_calls, calls_traded, win_rate, avg_max_gain, rug_rate, hit_rate, tier, last_updated,
+                 avg_time_to_max_gain_hours, median_max_gain, baseline_alpha, confidence_score, recent_hit_rate, sample_size)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(source_name) DO UPDATE SET
                     total_calls = EXCLUDED.total_calls,
                     calls_traded = EXCLUDED.calls_traded,
@@ -636,13 +877,20 @@ class MemecoinDatabase:
                     rug_rate = EXCLUDED.rug_rate,
                     hit_rate = EXCLUDED.hit_rate,
                     tier = EXCLUDED.tier,
-                    last_updated = EXCLUDED.last_updated
-            ''', (source_name, total_calls, calls_traded, win_rate, avg_max_gain, rug_rate, hit_rate, tier, timestamp))
+                    last_updated = EXCLUDED.last_updated,
+                    avg_time_to_max_gain_hours = EXCLUDED.avg_time_to_max_gain_hours,
+                    median_max_gain = EXCLUDED.median_max_gain,
+                    baseline_alpha = EXCLUDED.baseline_alpha,
+                    confidence_score = EXCLUDED.confidence_score,
+                    recent_hit_rate = EXCLUDED.recent_hit_rate,
+                    sample_size = EXCLUDED.sample_size
+            ''', upsert_params)
         else:
             self._execute('''
                 INSERT INTO source_performance
-                (source_name, total_calls, calls_traded, win_rate, avg_max_gain, rug_rate, hit_rate, tier, last_updated)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (source_name, total_calls, calls_traded, win_rate, avg_max_gain, rug_rate, hit_rate, tier, last_updated,
+                 avg_time_to_max_gain_hours, median_max_gain, baseline_alpha, confidence_score, recent_hit_rate, sample_size)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(source_name) DO UPDATE SET
                     total_calls = excluded.total_calls,
                     calls_traded = excluded.calls_traded,
@@ -651,8 +899,14 @@ class MemecoinDatabase:
                     rug_rate = excluded.rug_rate,
                     hit_rate = excluded.hit_rate,
                     tier = excluded.tier,
-                    last_updated = excluded.last_updated
-            ''', (source_name, total_calls, calls_traded, win_rate, avg_max_gain, rug_rate, hit_rate, tier, timestamp))
+                    last_updated = excluded.last_updated,
+                    avg_time_to_max_gain_hours = excluded.avg_time_to_max_gain_hours,
+                    median_max_gain = excluded.median_max_gain,
+                    baseline_alpha = excluded.baseline_alpha,
+                    confidence_score = excluded.confidence_score,
+                    recent_hit_rate = excluded.recent_hit_rate,
+                    sample_size = excluded.sample_size
+            ''', upsert_params)
 
         self.conn.commit()
 

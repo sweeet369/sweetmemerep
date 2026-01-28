@@ -79,7 +79,7 @@ def setup_demo_wallets():
     print("   3. Analyze a token - if any tracked wallets are top holders,")
     print("      you'll see 💰 SMART MONEY DETECTED section!")
     print("\n💡 Note: Smart money detection only works when:")
-    print("   - RugCheck API returns top holder wallet addresses")
+    print("   - GoPlus API returns top holder wallet addresses")
     print("   - Those addresses match wallets in your tracked list")
     print()
 

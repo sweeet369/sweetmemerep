@@ -3,7 +3,7 @@
 ## Overview
 
 The `performance_tracker.py` script automatically updates token performance data by:
-- Fetching current prices from DexScreener
+- Fetching current prices from Birdeye
 - Tracking price changes at 1h, 24h, 7d, and 30d intervals
 - Detecting rug pulls (liquidity drops or 99%+ price crashes)
 - Calculating max gains and losses
@@ -145,40 +145,12 @@ Best Gain: 485.20%
 Worst Loss: -99.50%
 ```
 
-## Best Practices
+## Behavior
 
-1. **Run hourly** for active trading
-2. **Run daily** for long-term tracking
-3. **Check logs** regularly for API errors
-4. **Rate limiting**: Script waits 1.5s between tokens to avoid API throttling
-5. **Manual runs**: Safe to run anytime, won't duplicate data
+- The tracker records time-series snapshots for active WATCH and TRADE positions.
+- Data collection stops when a token is removed from WATCH or a trade is exited.
+- Each run appends a row to `performance_history` and updates summary fields in `performance_tracking`.
 
-## Troubleshooting
+## Notes
 
-### "No tokens to track yet"
-You need to analyze tokens first using `analyzer.py`
-
-### API Timeouts
-The script will retry once, then mark data as unavailable
-
-### Permission Denied (macOS Launchd)
-```bash
-chmod 644 ~/Library/LaunchAgents/com.memecoin.tracker.plist
-```
-
-### Check Cron Status
-```bash
-# View cron jobs
-crontab -l
-
-# View cron logs (macOS)
-tail -f /var/mail/$USER
-```
-
-## Integration with Analyzer
-
-After running the performance tracker, source statistics in `analyzer.py` option [2] will show:
-- Updated win rates
-- Real average max gains
-- Actual rug pull rates
-- Accurate tier rankings (S/A/B/C)
+- The tracker only runs on active WATCH or TRADE positions.

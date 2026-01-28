@@ -25,7 +25,7 @@ class APIError(Exception):
 
     def __init__(self, message: str, source: str, cause: Optional[Exception] = None):
         super().__init__(message)
-        self.source = source  # 'birdeye', 'dexscreener', 'rugcheck'
+        self.source = source  # 'birdeye', 'goplus'
         self.cause = cause
 
 
@@ -181,11 +181,22 @@ def classify_http_error(response: requests.Response, source: str) -> APIError:
 
 
 class MemecoinDataFetcher:
-    """Fetches memecoin data from Birdeye (primary), DexScreener (backup), and RugCheck APIs."""
+    """Fetches memecoin data from Birdeye and GoPlus (security) APIs."""
 
     BIRDEYE_API = "https://public-api.birdeye.so/defi/token_overview"
-    DEXSCREENER_API = "https://api.dexscreener.com/latest/dex/tokens/{address}"
-    RUGCHECK_API = "https://api.rugcheck.xyz/v1/tokens/{address}/report"
+    GOPLUS_EVM_API = "https://api.gopluslabs.io/api/v1/token_security/{chain_id}"
+    GOPLUS_SOLANA_API = "https://api.gopluslabs.io/api/v1/solana/token_security"
+
+    # Chain configuration: maps chain names to API-specific values
+    # goplus_chain_id: EVM numeric chain ID for GoPlus, or 'solana' for Solana
+    CHAIN_CONFIG = {
+        'solana':   {'birdeye': 'solana',   'goplus_chain_id': 'solana',  'native': 'SOL'},
+        'base':     {'birdeye': 'base',     'goplus_chain_id': '8453',    'native': 'ETH'},
+        'ethereum': {'birdeye': 'ethereum', 'goplus_chain_id': '1',       'native': 'ETH'},
+        'bsc':      {'birdeye': 'bsc',      'goplus_chain_id': '56',      'native': 'BNB'},
+        'polygon':  {'birdeye': 'polygon',  'goplus_chain_id': '137',     'native': 'MATIC'},
+        'arbitrum': {'birdeye': 'arbitrum', 'goplus_chain_id': '42161',   'native': 'ETH'},
+    }
 
     def __init__(self, timeout: int = 10, retry_attempts: int = 2):
         """Initialize data fetcher with timeout and retry settings."""
@@ -222,15 +233,17 @@ class MemecoinDataFetcher:
         except (ValueError, KeyError) as e:
             raise ParseError(f"{source} returned invalid JSON", source, cause=e)
 
-    def fetch_birdeye_data(self, address: str) -> Optional[Dict[str, Any]]:
-        """Fetch market data from Birdeye API (primary source)."""
+    def fetch_birdeye_data(self, address: str, blockchain: str = 'solana') -> Optional[Dict[str, Any]]:
+        """Fetch market data from Birdeye API (primary source for all chains)."""
+        chain_config = self.CHAIN_CONFIG.get(blockchain.lower(), self.CHAIN_CONFIG['solana'])
+
         if not BIRDEYE_API_KEY:
             api_logger.warning("Birdeye API key not configured", token=address[:8])
             return None
 
         headers = {
             "X-API-KEY": BIRDEYE_API_KEY,
-            "x-chain": "solana"
+            "x-chain": chain_config['birdeye']
         }
         params = {"address": address}
 
@@ -312,123 +325,95 @@ class MemecoinDataFetcher:
 
         return None
 
-    def fetch_dexscreener_data(self, address: str) -> Optional[Dict[str, Any]]:
-        """Fetch market data from DexScreener API (backup source)."""
-        url = self.DEXSCREENER_API.format(address=address)
+    def fetch_security_data(self, address: str, blockchain: str = 'solana') -> Optional[Dict[str, Any]]:
+        """Fetch token security data from GoPlus Security API (works on all chains)."""
+        chain_config = self.CHAIN_CONFIG.get(blockchain.lower(), self.CHAIN_CONFIG['solana'])
+        goplus_chain_id = chain_config.get('goplus_chain_id', 'solana')
+
+        # Build URL based on chain type
+        if goplus_chain_id == 'solana':
+            url = f"{self.GOPLUS_SOLANA_API}?contract_addresses={address}"
+        else:
+            url = f"{self.GOPLUS_EVM_API.format(chain_id=goplus_chain_id)}?contract_addresses={address}"
 
         for attempt in range(1, self.retry_attempts + 1):
             with log_api_call(api_logger, url, 'GET', token=address[:8], attempt=attempt) as ctx:
                 try:
-                    response = self._make_request(url, 'DexScreener')
+                    response = self._make_request(url, 'GoPlus')
                     ctx['status_code'] = response.status_code
 
-                    data = self._parse_json(response, 'DexScreener')
+                    raw = self._parse_json(response, 'GoPlus')
 
-                    if not data.get('pairs') or len(data['pairs']) == 0:
-                        ctx['success'] = True
-                        api_logger.debug("DexScreener returned no pairs", token=address[:8])
+                    if not raw.get('result'):
+                        api_logger.debug("GoPlus returned no result", token=address[:8])
                         return None
 
-                    # Get all pairs and sort by liquidity
-                    pairs = sorted(data['pairs'], key=lambda x: x.get('liquidity', {}).get('usd', 0), reverse=True)
-                    main_pair = pairs[0]
-                    ctx['pairs_count'] = len(pairs)
+                    # GoPlus keys results by lowercase address
+                    token_key = address.lower() if goplus_chain_id != 'solana' else address
+                    data = raw['result'].get(token_key)
+                    if not data:
+                        # Try any key in the result
+                        data = next(iter(raw['result'].values()), None)
+                    if not data:
+                        api_logger.debug("GoPlus returned empty token data", token=address[:8])
+                        return None
 
-                    # Calculate liquidity across all pools
-                    main_pool_liquidity = float(main_pair.get('liquidity', {}).get('usd', 0))
-                    total_liquidity = sum(float(pair.get('liquidity', {}).get('usd', 0)) for pair in pairs)
-                    main_pool_dex = main_pair.get('dexId', 'Unknown')
+                    ctx['has_data'] = True
 
-                    # Extract price changes for different timeframes
-                    price_change = main_pair.get('priceChange', {})
+                    # Parse security fields — works for both EVM and Solana
+                    if goplus_chain_id == 'solana':
+                        # Solana-specific GoPlus format
+                        mintable = data.get('mintable', {})
+                        freezable = data.get('freezable', {})
+                        mint_revoked = str(mintable.get('status', '0')) == '0'
+                        freeze_revoked = str(freezable.get('status', '0')) == '0'
+                        is_honeypot = False  # Not directly flagged on Solana
+                        buy_tax = 0.0
+                        sell_tax = 0.0
+                        holder_count = 0  # Not in Solana response
 
-                    # Extract liquidity info (backward compatibility - use main pool)
-                    liquidity_usd = main_pool_liquidity
+                        # Top holders from Solana response
+                        top_holders_raw = data.get('holders', [])
+                        top_holders = [
+                            {'address': h.get('account', ''), 'pct': float(h.get('percent', 0)) * 100}
+                            for h in top_holders_raw
+                        ]
+                    else:
+                        # EVM GoPlus format
+                        mint_revoked = str(data.get('is_mintable', '0')) == '0'
+                        freeze_revoked = not (
+                            str(data.get('is_blacklisted', '0')) == '1'
+                            or str(data.get('transfer_pausable', '0')) == '1'
+                        )
+                        is_honeypot = str(data.get('is_honeypot', '0')) == '1'
+                        buy_tax = float(data.get('buy_tax', 0)) * 100  # GoPlus returns as decimal
+                        sell_tax = float(data.get('sell_tax', 0)) * 100
+                        holder_count = int(data.get('holder_count', 0))
 
-                    # Try to get ATH/ATL if available (not always present)
-                    price_usd = float(main_pair.get('priceUsd', 0))
+                        # Top holders from EVM response
+                        top_holders_raw = data.get('holders', [])
+                        top_holders = [
+                            {'address': h.get('address', ''), 'pct': float(h.get('percent', 0)) * 100}
+                            for h in top_holders_raw
+                        ]
 
-                    return {
-                        'price_usd': price_usd,
-                        'liquidity_usd': liquidity_usd,
-                        'main_pool_liquidity': main_pool_liquidity,
-                        'total_liquidity': total_liquidity,
-                        'main_pool_dex': main_pool_dex,
-                        'volume_24h': float(main_pair.get('volume', {}).get('h24', 0)),
-                        'market_cap': float(main_pair.get('fdv', 0)),
-                        'price_change_5m': float(price_change.get('m5', 0)) if price_change.get('m5') else None,
-                        'price_change_1h': float(price_change.get('h1', 0)) if price_change.get('h1') else None,
-                        'price_change_24h': float(price_change.get('h24', 0)) if price_change.get('h24') else None,
-                        'pair_created_at': main_pair.get('pairCreatedAt'),
-                        'buy_count_24h': main_pair.get('txns', {}).get('h24', {}).get('buys', 0),
-                        'sell_count_24h': main_pair.get('txns', {}).get('h24', {}).get('sells', 0),
-                        'dex': main_pair.get('dexId'),
-                        'pair_address': main_pair.get('pairAddress'),
-                        'token_symbol': main_pair.get('baseToken', {}).get('symbol'),
-                        'token_name': main_pair.get('baseToken', {}).get('name'),
-                        'raw_data': main_pair
-                    }
+                    # Calculate top holder percentages
+                    top_holder_percent = top_holders[0]['pct'] if top_holders else 0.0
+                    top_10_percent = sum(h['pct'] for h in top_holders[:10])
 
-                except RateLimitError as e:
-                    api_logger.warning("DexScreener rate limited",
-                        token=address[:8], retry_after=e.retry_after, attempt=attempt)
-                    if attempt < self.retry_attempts:
-                        time.sleep(min(e.retry_after, 10))
-                        continue
-                    return None
-
-                except (TimeoutError, NetworkError, ServerError) as e:
-                    if attempt < self.retry_attempts:
-                        delay = (2 ** (attempt - 1)) + random.uniform(0, 1)
-                        api_logger.warning("DexScreener transient error, retrying",
-                            token=address[:8], error_type=type(e).__name__,
-                            error=str(e), attempt=attempt, delay=round(delay, 2))
-                        time.sleep(delay)
-                        continue
-                    api_logger.error("DexScreener failed after all retries",
-                        token=address[:8], error_type=type(e).__name__,
-                        error=str(e), attempts=self.retry_attempts)
-                    return None
-
-                except (ClientError, ParseError, NoDataError) as e:
-                    api_logger.error("DexScreener permanent error",
-                        token=address[:8], error_type=type(e).__name__, error=str(e))
-                    return None
-
-                except (KeyError, ValueError, TypeError) as e:
-                    api_logger.error("DexScreener data parsing failed",
-                        token=address[:8], error=str(e), error_type=type(e).__name__)
-                    return None
-
-        return None
-
-    def fetch_rugcheck_data(self, address: str) -> Optional[Dict[str, Any]]:
-        """Fetch security data from RugCheck API."""
-        url = self.RUGCHECK_API.format(address=address)
-
-        for attempt in range(1, self.retry_attempts + 1):
-            with log_api_call(api_logger, url, 'GET', token=address[:8], attempt=attempt) as ctx:
-                try:
-                    response = self._make_request(url, 'RugCheck')
-                    ctx['status_code'] = response.status_code
-
-                    data = self._parse_json(response, 'RugCheck')
-
-                    # Parse mint and freeze authority
-                    mint_revoked = data.get('mintAuthority') is None or data.get('mintAuthority') == 'null'
-                    freeze_revoked = data.get('freezeAuthority') is None or data.get('freezeAuthority') == 'null'
-
-                    # Parse top holders
-                    top_holders = data.get('topHolders') or []
-                    top_holder_percent = float(top_holders[0].get('pct', 0)) if top_holders else 0.0
-                    top_10_percent = sum(float(h.get('pct', 0)) for h in top_holders[:10]) if top_holders else 0.0
-
-                    # Get holder count
-                    holder_count = data.get('markets', [{}])[0].get('holder', 0) if data.get('markets') else 0
-
-                    # Get rugcheck score
-                    rugcheck_score = float(data.get('score', 0))
-                    ctx['rugcheck_score'] = rugcheck_score
+                    # Build a security score (0 = safest, higher = riskier)
+                    # Mirrors what rugcheck_score did
+                    security_score = 0.0
+                    if not mint_revoked:
+                        security_score += 3000
+                    if not freeze_revoked:
+                        security_score += 3000
+                    if is_honeypot:
+                        security_score += 5000
+                    if top_holder_percent > 20:
+                        security_score += 1000
+                    if buy_tax > 5 or sell_tax > 5:
+                        security_score += 1000
 
                     return {
                         'mint_authority_revoked': mint_revoked,
@@ -436,12 +421,16 @@ class MemecoinDataFetcher:
                         'top_holder_percent': top_holder_percent,
                         'top_10_holders_percent': top_10_percent,
                         'holder_count': holder_count,
-                        'rugcheck_score': rugcheck_score,
-                        'raw_data': data
+                        'rugcheck_score': security_score,  # Backward-compatible field name
+                        'is_honeypot': is_honeypot,
+                        'buy_tax': buy_tax,
+                        'sell_tax': sell_tax,
+                        'raw_data': data,
+                        'top_holders': top_holders,
                     }
 
                 except RateLimitError as e:
-                    api_logger.warning("RugCheck rate limited",
+                    api_logger.warning("GoPlus rate limited",
                         token=address[:8], retry_after=e.retry_after, attempt=attempt)
                     if attempt < self.retry_attempts:
                         time.sleep(min(e.retry_after, 10))
@@ -451,23 +440,23 @@ class MemecoinDataFetcher:
                 except (TimeoutError, NetworkError, ServerError) as e:
                     if attempt < self.retry_attempts:
                         delay = (2 ** (attempt - 1)) + random.uniform(0, 1)
-                        api_logger.warning("RugCheck transient error, retrying",
+                        api_logger.warning("GoPlus transient error, retrying",
                             token=address[:8], error_type=type(e).__name__,
                             error=str(e), attempt=attempt, delay=round(delay, 2))
                         time.sleep(delay)
                         continue
-                    api_logger.error("RugCheck failed after all retries",
+                    api_logger.error("GoPlus failed after all retries",
                         token=address[:8], error_type=type(e).__name__,
                         error=str(e), attempts=self.retry_attempts)
                     return None
 
                 except (ClientError, ParseError, NoDataError) as e:
-                    api_logger.error("RugCheck permanent error",
+                    api_logger.error("GoPlus permanent error",
                         token=address[:8], error_type=type(e).__name__, error=str(e))
                     return None
 
                 except (KeyError, ValueError, TypeError) as e:
-                    api_logger.error("RugCheck data parsing failed",
+                    api_logger.error("GoPlus data parsing failed",
                         token=address[:8], error=str(e), error_type=type(e).__name__)
                     return None
 
@@ -698,41 +687,8 @@ class MemecoinDataFetcher:
 
         return momentum
 
-    def estimate_token_taxes(self, rugcheck_data: Dict[str, Any]) -> Dict[str, float]:
-        """
-        Estimate buy/sell taxes from RugCheck data if available.
-        Returns dict with estimated taxes.
-        """
-        taxes = {
-            'estimated_buy_tax': 0.0,
-            'estimated_sell_tax': 0.0,
-            'tax_warning': None
-        }
-
-        if not rugcheck_data:
-            return taxes
-
-        # Check for transfer fee in RugCheck risks
-        risks = rugcheck_data.get('risks', [])
-        for risk in risks:
-            risk_name = risk.get('name', '').lower()
-            risk_desc = risk.get('description', '').lower()
-
-            # Look for tax-related risks
-            if 'transfer fee' in risk_name or 'tax' in risk_name:
-                # Try to extract percentage from description
-                import re
-                match = re.search(r'(\d+(?:\.\d+)?)\s*%', risk_desc)
-                if match:
-                    tax_pct = float(match.group(1))
-                    taxes['estimated_sell_tax'] = max(taxes['estimated_sell_tax'], tax_pct)
-                    taxes['estimated_buy_tax'] = max(taxes['estimated_buy_tax'], tax_pct)
-
-            # Check for specific warnings
-            if 'honeypot' in risk_name or 'cannot sell' in risk_desc:
-                taxes['tax_warning'] = 'POTENTIAL_HONEYPOT'
-
-        return taxes
+    # Note: Token tax estimation is handled by GoPlus Security API
+    # which returns buy_tax and sell_tax fields.
 
     def calculate_safety_score(self, data: Dict[str, Any]) -> float:
         """Calculate safety score (0-10) based on various factors."""
@@ -778,7 +734,7 @@ class MemecoinDataFetcher:
         Cross-reference top holders with tracked smart money wallets.
 
         Args:
-            top_holders: List of top holder dicts from RugCheck (with 'address' and 'pct' keys)
+            top_holders: List of top holder dicts from GoPlus (with 'address' and 'pct' keys)
             tracked_wallets: List of tracked wallet dicts from database
 
         Returns:
@@ -864,33 +820,52 @@ class MemecoinDataFetcher:
 
         return analysis
 
-    def fetch_all_data(self, address: str, tracked_wallets: List[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
-        """Fetch and combine data from all sources. Uses Birdeye as primary, DexScreener as backup."""
+    # Native token addresses for fetching chain token prices
+    NATIVE_TOKEN_ADDRESSES = {
+        'SOL': 'So11111111111111111111111111111111111111112',
+        'ETH': '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2',  # WETH on Ethereum
+        'BNB': '0xbb4CdB9CBd36B01bD1cBaEBF2De08d9173bc095c',  # WBNB on BSC
+        'MATIC': '0x0d500B1d8E8eF31E21C99d1Db9A6444d3ADf1270',  # WMATIC on Polygon
+    }
 
-        # Try Birdeye first (primary source)
+    def fetch_native_price(self, blockchain: str = 'solana') -> Optional[float]:
+        """Fetch current native token price (SOL, ETH, BNB, etc.) from Birdeye."""
+        chain_config = self.CHAIN_CONFIG.get(blockchain.lower(), {})
+        native_token = chain_config.get('native', 'SOL')
+        address = self.NATIVE_TOKEN_ADDRESSES.get(native_token)
+
+        if not address:
+            api_logger.warning("No native token address for chain", chain=blockchain)
+            return None
+
+        data = self.fetch_birdeye_data(address, blockchain=blockchain)
+        if not data:
+            return None
+        return data.get('price_usd')
+
+    def fetch_all_data(self, address: str, tracked_wallets: List[Dict[str, Any]] = None,
+                       blockchain: str = 'solana') -> Optional[Dict[str, Any]]:
+        """Fetch and combine data from all sources. Uses Birdeye as the only market data source."""
+        blockchain = blockchain.lower()
+        chain_config = self.CHAIN_CONFIG.get(blockchain, self.CHAIN_CONFIG['solana'])
+
+        # Use Birdeye (only market data source)
         print(f"🔍 Fetching Birdeye data...")
-        market_data = self.fetch_birdeye_data(address)
+        market_data = self.fetch_birdeye_data(address, blockchain=blockchain)
         data_source = "Birdeye"
-
-        # Fall back to DexScreener if Birdeye fails
-        if not market_data:
-            api_logger.info("Birdeye unavailable, falling back to DexScreener", token=address[:8])
-            print(f"⚠️  Birdeye failed, falling back to DexScreener...")
-            market_data = self.fetch_dexscreener_data(address)
-            data_source = "DexScreener"
 
         if not market_data:
             api_logger.error("All market data sources failed", token=address[:8],
-                sources_tried=["Birdeye", "DexScreener"])
+                sources_tried=["Birdeye"])
             print("❌ Failed to fetch market data from any source")
             return None
 
         api_logger.info("Market data fetched successfully", token=address[:8], source=data_source)
         print(f"✅ Market data from {data_source}")
 
-        # Get security data from RugCheck
-        print(f"🔍 Fetching RugCheck data...")
-        rug_data = self.fetch_rugcheck_data(address)
+        # Get security data from GoPlus (all chains)
+        print(f"🔍 Fetching security data...")
+        security_data = self.fetch_security_data(address, blockchain=blockchain)
 
         # Combine all data
         combined_data = {
@@ -916,33 +891,33 @@ class MemecoinDataFetcher:
             'liquidity_locked_percent': None,
         }
 
-        # Token age from DexScreener (Birdeye doesn't provide creation time)
-        if market_data.get('pair_created_at'):
-            combined_data['token_age_hours'] = self.calculate_token_age_hours(market_data.get('pair_created_at'))
-        else:
-            combined_data['token_age_hours'] = 0.0
+        # Token age not available from Birdeye
+        combined_data['token_age_hours'] = 0.0
 
-        # RugCheck security data
-        if rug_data:
+        # Security data (GoPlus)
+        if security_data:
             combined_data.update({
-                'holder_count': rug_data.get('holder_count') or market_data.get('holder_count'),
-                'top_holder_percent': rug_data['top_holder_percent'],
-                'top_10_holders_percent': rug_data['top_10_holders_percent'],
-                'mint_authority_revoked': 1 if rug_data['mint_authority_revoked'] else 0,
-                'freeze_authority_revoked': 1 if rug_data['freeze_authority_revoked'] else 0,
-                'rugcheck_score': rug_data['rugcheck_score'],
+                'holder_count': security_data.get('holder_count') or market_data.get('holder_count'),
+                'top_holder_percent': security_data['top_holder_percent'],
+                'top_10_holders_percent': security_data['top_10_holders_percent'],
+                'mint_authority_revoked': 1 if security_data['mint_authority_revoked'] else 0,
+                'freeze_authority_revoked': 1 if security_data['freeze_authority_revoked'] else 0,
+                'rugcheck_score': security_data['rugcheck_score'],
             })
 
-            # Estimate token taxes from RugCheck risks
-            taxes = self.estimate_token_taxes(rug_data.get('raw_data', {}))
-            combined_data.update(taxes)
+            # Token taxes directly from GoPlus
+            combined_data.update({
+                'estimated_buy_tax': security_data.get('buy_tax', 0.0),
+                'estimated_sell_tax': security_data.get('sell_tax', 0.0),
+                'tax_warning': 'POTENTIAL_HONEYPOT' if security_data.get('is_honeypot') else None,
+            })
 
-            # Analyze holder distribution
-            top_holders = rug_data.get('raw_data', {}).get('topHolders', [])
+            # Analyze holder distribution using GoPlus top holders
+            top_holders = security_data.get('top_holders', [])
             holder_analysis = self.analyze_holder_distribution(top_holders)
             combined_data.update(holder_analysis)
         else:
-            # Set defaults if RugCheck fails - use Birdeye holder count if available
+            # Set defaults if security check fails - use Birdeye holder count if available
             combined_data.update({
                 'holder_count': market_data.get('holder_count'),
                 'top_holder_percent': None,
@@ -958,8 +933,8 @@ class MemecoinDataFetcher:
         # Check for smart money wallets
         smart_money_wallets = []
         smart_money_bonus = 0
-        if tracked_wallets and rug_data and rug_data.get('raw_data', {}).get('topHolders'):
-            top_holders = rug_data['raw_data'].get('topHolders', [])
+        if tracked_wallets and security_data and security_data.get('top_holders'):
+            top_holders = security_data['top_holders']
             smart_money_wallets = self.check_smart_money_wallets(top_holders, tracked_wallets)
 
             # Calculate smart money bonus for safety score
@@ -998,9 +973,14 @@ class MemecoinDataFetcher:
 
         # Store raw data
         combined_data['raw_data'] = {
-            'birdeye' if data_source == 'Birdeye' else 'dexscreener': market_data.get('raw_data', {}),
-            'rugcheck': rug_data.get('raw_data', {}) if rug_data else {}
+            'birdeye': market_data.get('raw_data', {}),
+            'goplus': security_data.get('raw_data', {}) if security_data else {}
         }
+
+        # Fetch native token price for market context (SOL, ETH, BNB, etc.)
+        native_price = self.fetch_native_price(blockchain=blockchain)
+        if native_price:
+            combined_data['sol_price_usd'] = native_price  # Keep column name for backward compatibility
 
         return combined_data
 
@@ -1037,7 +1017,7 @@ if __name__ == "__main__":
         print(f"   Top Holder: {data.get('top_holder_percent', 0):.2f}%")
         print(f"   Mint Revoked: {'✅' if data.get('mint_authority_revoked') else '❌'}")
         print(f"   Freeze Revoked: {'✅' if data.get('freeze_authority_revoked') else '❌'}")
-        print(f"   RugCheck Score: {data.get('rugcheck_score', 'N/A')}")
+        print(f"   Security Score: {data.get('rugcheck_score', 'N/A')}")
 
         # NEW: Honeypot risk
         print(f"\n🚨 HONEYPOT RISK: {data.get('honeypot_risk', 'UNKNOWN')}")

@@ -38,8 +38,8 @@ except ImportError:
     sys.exit(1)
 
 
-# Path to local SQLite database
-SQLITE_DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "memecoin_analyzer.db")
+# Path to local SQLite database (repo root)
+SQLITE_DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "memecoin_analyzer.db")
 
 
 def migrate():

@@ -6,12 +6,12 @@ Memecoin Trading Analyzer - Main CLI Interface
 from __future__ import annotations
 
 import json
-import logging
 import sys
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Generic, TypeVar
 
+from app_logger import analyzer_logger as logger
 from database import MemecoinDatabase
 from data_fetcher import MemecoinDataFetcher
 from display import (
@@ -24,15 +24,6 @@ from display import (
 # =============================================================================
 # LOGGING SETUP
 # =============================================================================
-
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('analyzer.log'),
-    ]
-)
-logger = logging.getLogger(__name__)
 
 # =============================================================================
 # TYPE DEFINITIONS
@@ -162,14 +153,12 @@ class MemecoinAnalyzer:
         # Get source(s) - allow comma-separated
         source_input = input("Source name(s) - comma-separated for multiple (e.g., 'Alpha Group #3, Twitter Call'): ").strip()
         if not source_input:
-            source = "Unknown"
+            source = "unknown"
         else:
-            # Clean up sources: split by comma, strip whitespace, normalize to lowercase
-            sources = [s.strip().lower() for s in source_input.split(',') if s.strip()]
-            source = ', '.join(sources)  # Store as comma-separated string
+            source = self.db.normalize_sources(source_input)
 
         # Get blockchain
-        blockchain = input("Blockchain [Solana/BNB] (default Solana): ").strip()
+        blockchain = input("Blockchain [Solana/Base/Ethereum/BSC/Polygon/Arbitrum] (default Solana): ").strip()
         if not blockchain:
             blockchain = "Solana"
 
@@ -182,7 +171,7 @@ class MemecoinAnalyzer:
 
         # Fetch data (with smart money detection)
         try:
-            data = self.fetcher.fetch_all_data(contract_address, tracked_wallets=tracked_wallets)
+            data = self.fetcher.fetch_all_data(contract_address, tracked_wallets=tracked_wallets, blockchain=blockchain)
         except Exception as e:
             logger.error(f"Failed to fetch data for {contract_address}: {e}", exc_info=True)
             print(f"\n❌ API error: {e}")
@@ -193,13 +182,9 @@ class MemecoinAnalyzer:
             print("\n❌ Failed to fetch token data. Token may not exist or APIs are unavailable.")
             return
 
-        # Get token info from DexScreener raw data
-        token_name = "Unknown"
-        token_symbol = "Unknown"
-        if data.get('raw_data', {}).get('dexscreener'):
-            dex_raw = data['raw_data']['dexscreener']
-            token_name = dex_raw.get('baseToken', {}).get('name', 'Unknown')
-            token_symbol = dex_raw.get('baseToken', {}).get('symbol', 'Unknown')
+        # Get token info from unified data (Birdeye)
+        token_name = data.get('token_name') or "Unknown"
+        token_symbol = data.get('token_symbol') or "Unknown"
 
         # Insert call to database
         call_id = self.db.insert_call(
@@ -220,7 +205,7 @@ class MemecoinAnalyzer:
         self.get_user_decision(call_id, contract_address, data)
 
         # Update source performance for all sources
-        sources = [s.strip() for s in source.split(',')]
+        sources = [self.db.normalize_source_name(s) for s in source.split(',')]
         for src in sources:
             self.db.update_source_performance(src)
 
@@ -258,7 +243,7 @@ class MemecoinAnalyzer:
         if decision == 'TRADE':
             # Fetch CURRENT price for entry (not snapshot price which is the call price)
             print("\n⏳ Fetching current price for entry...")
-            current_data = self.fetcher.fetch_dexscreener_data(contract_address)
+            current_data = self.fetcher.fetch_birdeye_data(contract_address, blockchain=blockchain)
             if current_data:
                 entry_price = current_data.get('price_usd')
                 print(f"💰 Current Entry Price: ${entry_price:.10f}")
@@ -327,29 +312,55 @@ class MemecoinAnalyzer:
             print("\n⚠️  No source data available yet. Analyze some calls first!")
             return
 
-        print(f"\n{'Tier':<6} {'Source':<25} {'Calls':<8} {'Traded':<8} {'Win%':<8} {'Hit%':<8} {'Avg Gain':<12} {'Rug%':<8}")
-        print("─"*95)
+        print(f"\n{'Tier':<6} {'Source':<20} {'n=':<5} {'Hit%':<7} {'Recent':<7} {'Avg Gain':<10} {'Alpha':<8} {'Conf':<6} {'Peak Time':<10} {'Rug%':<6}")
+        print("─"*105)
 
         for source in sources:
             tier = source['tier']
-            name = source['source_name'][:24]
+            name = source['source_name'][:19]
             total = source['total_calls']
-            traded = source['calls_traded']
-            win_rate_raw = source['win_rate']
-            hit_rate = source.get('hit_rate', 0.0) * 100  # Get hit_rate, default to 0
+            hit_rate = source.get('hit_rate', 0.0) * 100
             avg_gain = source['avg_max_gain']
             rug_rate = source['rug_rate'] * 100
 
             # Add tier emoji
             tier_emoji = get_tier_emoji(tier)
 
-            # Format win rate: Show N/A if no trades, otherwise show percentage
-            if traded == 0:
-                win_rate_str = "   N/A"
-            else:
-                win_rate_str = f"{win_rate_raw * 100:>6.1f}%"
+            # New metrics
+            sample_size = source.get('sample_size') or total
+            alpha = source.get('baseline_alpha')
+            confidence = source.get('confidence_score')
+            recent_hr = source.get('recent_hit_rate')
+            avg_peak_time = source.get('avg_time_to_max_gain_hours')
 
-            print(f"{tier_emoji} {tier:<4} {name:<25} {total:<8} {traded:<8} {win_rate_str:<8} {hit_rate:>6.1f}% {avg_gain:>10.1f}% {rug_rate:>6.1f}%")
+            # Format alpha with +/- prefix
+            if alpha is not None:
+                alpha_str = f"{alpha:+.1f}%"
+            else:
+                alpha_str = "  N/A"
+
+            # Format confidence as percentage
+            if confidence is not None:
+                conf_str = f"{confidence * 100:.0f}%"
+            else:
+                conf_str = " N/A"
+
+            # Format recent hit rate
+            if recent_hr is not None:
+                recent_str = f"{recent_hr * 100:.0f}%"
+            else:
+                recent_str = "  N/A"
+
+            # Format avg peak time in hours or days
+            if avg_peak_time is not None:
+                if avg_peak_time >= 24:
+                    peak_str = f"{avg_peak_time / 24:.1f}d"
+                else:
+                    peak_str = f"{avg_peak_time:.1f}h"
+            else:
+                peak_str = "N/A"
+
+            print(f"{tier_emoji} {tier:<4} {name:<20} {sample_size:<5} {hit_rate:>5.1f}% {recent_str:>6} {avg_gain:>8.1f}% {alpha_str:>7} {conf_str:>5} {peak_str:>9} {rug_rate:>5.1f}%")
 
     def view_watchlist(self) -> None:
         """Display performance of all tokens in watchlist."""
@@ -358,35 +369,83 @@ class MemecoinAnalyzer:
         print("━"*60)
 
         # Query all WATCH decisions with token data
-        self.db.cursor.execute('''
-            SELECT
-                c.call_id,
-                c.token_symbol,
-                c.token_name,
-                c.contract_address,
-                c.source,
-                s.price_usd as entry_price,
-                s.snapshot_timestamp,
-                s.safety_score,
-                s.liquidity_usd as entry_liquidity,
-                s.market_cap as initial_mcap,
-                d.timestamp_decision,
-                d.reasoning_notes,
-                d.confidence_level,
-                p.current_mcap,
-                p.current_liquidity,
-                p.max_gain_observed,
-                p.max_loss_observed,
-                p.token_still_alive,
-                p.rug_pull_occurred,
-                p.last_updated
-            FROM calls_received c
-            JOIN my_decisions d ON c.call_id = d.call_id
-            JOIN initial_snapshot s ON c.call_id = s.call_id
-            LEFT JOIN performance_tracking p ON c.call_id = p.call_id
-            WHERE d.my_decision = 'WATCH'
-            ORDER BY d.timestamp_decision DESC
-        ''')
+        try:
+            self.db.cursor.execute('''
+                SELECT
+                    c.call_id,
+                    c.token_symbol,
+                    c.token_name,
+                    c.contract_address,
+                    c.source,
+                    s.price_usd as entry_price,
+                    s.snapshot_timestamp,
+                    s.safety_score,
+                    s.liquidity_usd as entry_liquidity,
+                    s.market_cap as initial_mcap,
+                    s.raw_data as raw_data,
+                    d.timestamp_decision,
+                    d.reasoning_notes,
+                    d.confidence_level,
+                    p.current_mcap as tracked_mcap,
+                    p.current_liquidity as tracked_liquidity,
+                    p.max_gain_observed,
+                    p.max_loss_observed,
+                    p.token_still_alive,
+                    p.rug_pull_occurred,
+                    p.last_updated,
+                    ph.price_usd as current_price,
+                    ph.liquidity_usd as current_liquidity,
+                    ph.market_cap as current_mcap,
+                    ph.timestamp as current_timestamp
+                FROM calls_received c
+                JOIN my_decisions d ON c.call_id = d.call_id
+                JOIN initial_snapshot s ON c.call_id = s.call_id
+                LEFT JOIN performance_tracking p ON c.call_id = p.call_id
+                LEFT JOIN (
+                    SELECT ph1.*
+                    FROM performance_history ph1
+                    JOIN (
+                        SELECT call_id, MAX(timestamp) as max_ts
+                        FROM performance_history
+                        GROUP BY call_id
+                    ) ph2
+                    ON ph1.call_id = ph2.call_id AND ph1.timestamp = ph2.max_ts
+                ) ph ON ph.call_id = c.call_id
+                WHERE d.my_decision = 'WATCH'
+                ORDER BY d.timestamp_decision DESC
+            ''')
+        except Exception as e:
+            logger.warning("performance_history unavailable, using tracked snapshot only", error=str(e))
+            self.db.cursor.execute('''
+                SELECT
+                    c.call_id,
+                    c.token_symbol,
+                    c.token_name,
+                    c.contract_address,
+                    c.source,
+                    s.price_usd as entry_price,
+                    s.snapshot_timestamp,
+                    s.safety_score,
+                    s.liquidity_usd as entry_liquidity,
+                    s.market_cap as initial_mcap,
+                    s.raw_data as raw_data,
+                    d.timestamp_decision,
+                    d.reasoning_notes,
+                    d.confidence_level,
+                    p.current_mcap as tracked_mcap,
+                    p.current_liquidity as tracked_liquidity,
+                    p.max_gain_observed,
+                    p.max_loss_observed,
+                    p.token_still_alive,
+                    p.rug_pull_occurred,
+                    p.last_updated
+                FROM calls_received c
+                JOIN my_decisions d ON c.call_id = d.call_id
+                JOIN initial_snapshot s ON c.call_id = s.call_id
+                LEFT JOIN performance_tracking p ON c.call_id = p.call_id
+                WHERE d.my_decision = 'WATCH'
+                ORDER BY d.timestamp_decision DESC
+            ''')
 
         watchlist = [dict(row) for row in self.db.cursor.fetchall()]
 
@@ -397,6 +456,32 @@ class MemecoinAnalyzer:
         print(f"\n📋 Watching {len(watchlist)} token(s)\n")
 
         for i, token in enumerate(watchlist, 1):
+            # Backfill token symbol/name from snapshot raw_data if missing
+            if (not token.get('token_symbol') or token.get('token_symbol') == 'Unknown' or
+                not token.get('token_name') or token.get('token_name') == 'Unknown'):
+                raw = token.get('raw_data')
+                if raw:
+                    if isinstance(raw, str):
+                        try:
+                            raw = json.loads(raw)
+                        except json.JSONDecodeError:
+                            raw = None
+                    if isinstance(raw, dict):
+                        name = None
+                        symbol = None
+                        birdeye_raw = raw.get('birdeye', {}) if raw else {}
+                        if birdeye_raw:
+                            name = birdeye_raw.get('name')
+                            symbol = birdeye_raw.get('symbol')
+                        if name or symbol:
+                            self.db._execute('''
+                                UPDATE calls_received
+                                SET token_symbol = ?, token_name = ?
+                                WHERE call_id = ?
+                            ''', (symbol or token.get('token_symbol'), name or token.get('token_name'), token['call_id']))
+                            self.db.conn.commit()
+                            token['token_symbol'] = symbol or token.get('token_symbol')
+                            token['token_name'] = name or token.get('token_name')
             # Header for each token
             print("─"*60)
             print(f"[{i}] ${token['token_symbol']} - {token['token_name']}")
@@ -411,7 +496,7 @@ class MemecoinAnalyzer:
 
             # Market cap info
             initial_mcap = token.get('initial_mcap')
-            current_mcap = token.get('current_mcap')
+            current_mcap = token.get('current_mcap') or token.get('tracked_mcap')
             if initial_mcap:
                 print(f"    💰 Initial MCap: {format_currency(initial_mcap)}")
             if current_mcap:
@@ -421,21 +506,34 @@ class MemecoinAnalyzer:
 
             # Liquidity tracking
             entry_liquidity = token.get('entry_liquidity')
-            current_liquidity = token.get('current_liquidity')
+            current_liquidity = token.get('current_liquidity') or token.get('tracked_liquidity')
             if current_liquidity and entry_liquidity:
                 liq_change = ((current_liquidity - entry_liquidity) / entry_liquidity * 100) if entry_liquidity else 0
                 liq_indicator = "📈" if liq_change > 0 else "📉" if liq_change < 0 else "➡️"
                 print(f"    {liq_indicator} Current Liquidity: {format_currency(current_liquidity)} ({liq_change:+.1f}%)")
 
-            # Decision info
-            decision_time = datetime.fromisoformat(token['timestamp_decision'])
-            days_ago = (datetime.now() - decision_time).days
-            hours_ago = (datetime.now() - decision_time).seconds // 3600
+            # Current price
+            current_price = token.get('current_price')
+            if current_price:
+                entry_price = token.get('entry_price') or 0
+                price_change = ((current_price - entry_price) / entry_price * 100) if entry_price else 0
+                price_indicator = "📈" if price_change > 0 else "📉" if price_change < 0 else "➡️"
+                print(f"    {price_indicator} Current Price: ${current_price:.10f} ({price_change:+.1f}%)")
 
-            if days_ago > 0:
-                print(f"    ⏱️  Added: {days_ago}d ago")
-            else:
-                print(f"    ⏱️  Added: {hours_ago}h ago")
+            # Decision info
+            if token['timestamp_decision']:
+                ts = token['timestamp_decision']
+                decision_time = ts if isinstance(ts, datetime) else datetime.fromisoformat(str(ts))
+                # Strip timezone info for comparison with datetime.now()
+                if decision_time.tzinfo is not None:
+                    decision_time = decision_time.replace(tzinfo=None)
+                days_ago = (datetime.now() - decision_time).days
+                hours_ago = (datetime.now() - decision_time).seconds // 3600
+
+                if days_ago > 0:
+                    print(f"    ⏱️  Added: {days_ago}d ago")
+                else:
+                    print(f"    ⏱️  Added: {hours_ago}h ago")
 
             if token['reasoning_notes']:
                 print(f"    📝 Notes: {token['reasoning_notes'][:50]}")
@@ -466,13 +564,26 @@ class MemecoinAnalyzer:
                 else:
                     print(f"    ➡️  Stable/Minor movement")
 
-                if token['last_updated']:
-                    update_time = datetime.fromisoformat(token['last_updated'])
+                last_ts = token.get('current_timestamp') or token.get('last_updated')
+                if last_ts:
+                    lu = last_ts
+                    update_time = lu if isinstance(lu, datetime) else datetime.fromisoformat(str(lu))
+                    if update_time.tzinfo is not None:
+                        update_time = update_time.replace(tzinfo=None)
                     update_mins_ago = (datetime.now() - update_time).seconds // 60
                     print(f"    🔄 Last updated: {update_mins_ago}m ago")
             else:
-                print(f"    ⏳ Waiting for performance data...")
-                print(f"    💡 Run: python3 performance_tracker.py")
+                if not (current_price or current_liquidity or current_mcap):
+                    print(f"    ⏳ Waiting for performance data...")
+                    print(f"    💡 Run: python3 performance_tracker.py")
+                last_ts = token.get('current_timestamp') or token.get('last_updated')
+                if last_ts:
+                    lu = last_ts
+                    update_time = lu if isinstance(lu, datetime) else datetime.fromisoformat(str(lu))
+                    if update_time.tzinfo is not None:
+                        update_time = update_time.replace(tzinfo=None)
+                    update_mins_ago = (datetime.now() - update_time).seconds // 60
+                    print(f"    🔄 Last updated: {update_mins_ago}m ago")
 
         print("─"*60)
         print(f"\n💡 Tip: Tokens showing strong gains may be good entry opportunities!")
@@ -487,7 +598,7 @@ class MemecoinAnalyzer:
         # Get all TRADE decisions without exit
         self.db.cursor.execute('''
             SELECT
-                c.call_id, c.contract_address, c.token_symbol, c.token_name, c.source,
+                c.call_id, c.contract_address, c.token_symbol, c.token_name, c.source, c.blockchain,
                 s.price_usd as call_price,
                 s.liquidity_usd as entry_liquidity,
                 s.market_cap as entry_mcap,
@@ -531,7 +642,7 @@ class MemecoinAnalyzer:
             source = pos['source'] or 'Unknown'
 
             # Fetch current price
-            current_data = self.fetcher.fetch_dexscreener_data(pos['contract_address'])
+            current_data = self.fetcher.fetch_birdeye_data(pos['contract_address'], blockchain=pos.get('blockchain', 'solana'))
             current_price = current_data.get('price_usd') if current_data else None
             current_liquidity = current_data.get('liquidity_usd') if current_data else None
             current_mcap = current_data.get('market_cap') if current_data else None
@@ -608,7 +719,10 @@ class MemecoinAnalyzer:
 
             # Entry time
             if pos['entry_timestamp']:
-                entry_time = datetime.fromisoformat(pos['entry_timestamp'])
+                et = pos['entry_timestamp']
+                entry_time = et if isinstance(et, datetime) else datetime.fromisoformat(str(et))
+                if entry_time.tzinfo is not None:
+                    entry_time = entry_time.replace(tzinfo=None)
                 days_held = (datetime.now() - entry_time).days
                 hours_held = (datetime.now() - entry_time).seconds // 3600
                 if days_held > 0:
@@ -652,6 +766,7 @@ class MemecoinAnalyzer:
                 c.token_symbol,
                 c.token_name,
                 c.contract_address,
+                c.blockchain,
                 d.timestamp_decision,
                 p.current_price,
                 p.max_gain_observed,
@@ -708,7 +823,7 @@ class MemecoinAnalyzer:
 
         # Fetch CURRENT price for entry
         print("\n⏳ Fetching current price for entry...")
-        current_data = self.fetcher.fetch_dexscreener_data(contract_address)
+        current_data = self.fetcher.fetch_birdeye_data(contract_address, blockchain=selected_token.get('blockchain', 'solana'))
 
         if current_data:
             entry_price = current_data.get('price_usd')
@@ -1004,10 +1119,10 @@ class MemecoinAnalyzer:
             return
 
         # Parse new sources (normalize to lowercase)
-        new_sources = [s.strip().lower() for s in new_sources_input.split(',') if s.strip()]
+        new_sources = [self.db.normalize_source_name(s) for s in new_sources_input.split(',') if s.strip()]
 
         # Get existing sources (normalize to lowercase)
-        existing_sources = [s.strip().lower() for s in call['source'].split(',') if s.strip()]
+        existing_sources = [self.db.normalize_source_name(s) for s in call['source'].split(',') if s.strip()]
 
         # Merge (avoid duplicates)
         all_sources = existing_sources.copy()
@@ -1058,7 +1173,10 @@ class MemecoinAnalyzer:
         # Display open trades
         print(f"\n📋 Open trades ({len(open_trades)}):\n")
         for i, trade in enumerate(open_trades, 1):
-            entry_time = datetime.fromisoformat(trade['timestamp_decision'])
+            td = trade['timestamp_decision']
+            entry_time = td if isinstance(td, datetime) else datetime.fromisoformat(str(td))
+            if entry_time.tzinfo is not None:
+                entry_time = entry_time.replace(tzinfo=None)
             days_ago = (datetime.now() - entry_time).days
             hours_ago = ((datetime.now() - entry_time).seconds // 3600) if days_ago == 0 else 0
 

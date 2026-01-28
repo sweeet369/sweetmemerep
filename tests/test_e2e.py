@@ -35,12 +35,8 @@ def test_full_workflow():
     print("✅ Data fetched successfully")
 
     # Get token info
-    token_name = "BONK"
-    token_symbol = "BONK"
-    if data.get('raw_data', {}).get('dexscreener'):
-        dex_raw = data['raw_data']['dexscreener']
-        token_name = dex_raw.get('baseToken', {}).get('name', 'BONK')
-        token_symbol = dex_raw.get('baseToken', {}).get('symbol', 'BONK')
+    token_name = data.get('token_name') or "BONK"
+    token_symbol = data.get('token_symbol') or "BONK"
 
     # Insert call
     print(f"\n3️⃣  Inserting call to database...")

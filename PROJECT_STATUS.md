@@ -18,7 +18,7 @@ Your database password was exposed in a conversation. When you have time:
 ### Local App
 - **Analyzer** (`python3 analyzer.py`) - Fully working
 - **Uses Supabase** - Local and cloud now share the same database
-- **Uses Birdeye API** - More accurate data than DexScreener
+- **Uses Birdeye API** - Market data source
 - **`.env` file** - Stores your secrets locally (not committed to git)
 
 ### Cloud Tracker (GitHub Actions)
@@ -36,8 +36,7 @@ Your database password was exposed in a conversation. When you have time:
 | Source | Purpose | Status |
 |--------|---------|--------|
 | **Birdeye** (Primary) | Price, liquidity, volume, market cap, holders | ✅ Working |
-| **DexScreener** (Backup) | Fallback if Birdeye fails, token age | ✅ Working |
-| **RugCheck** | Security (mint/freeze authority, top holders) | ✅ Working |
+| **GoPlus** | Security (mint/freeze authority, top holders) | ✅ Working |
 
 ---
 
@@ -57,7 +56,7 @@ Your database password was exposed in a conversation. When you have time:
 sweetmemerep-1/
 ├── analyzer.py           # Main CLI app
 ├── database.py           # Database (SQLite + PostgreSQL support)
-├── data_fetcher.py       # Birdeye + DexScreener + RugCheck APIs
+├── data_fetcher.py       # Birdeye + GoPlus APIs
 ├── performance_tracker.py # Auto-tracks prices (runs in cloud)
 ├── .env                  # Your local secrets (NOT in git)
 ├── .env.example          # Template for .env

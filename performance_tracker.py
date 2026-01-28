@@ -30,9 +30,11 @@ class PerformanceTracker:
                 c.token_symbol,
                 c.token_name,
                 c.source,
+                c.blockchain,
                 s.snapshot_timestamp,
-                s.price_usd as entry_price,
+                s.price_usd as call_price,
                 d.my_decision,
+                d.entry_price as trade_entry_price,
                 d.actual_exit_price
             FROM calls_received c
             JOIN initial_snapshot s ON c.call_id = s.call_id
@@ -45,30 +47,35 @@ class PerformanceTracker:
         ''')
         return [dict(row) for row in self.db.cursor.fetchall()]
 
-    def calculate_time_since_snapshot(self, snapshot_timestamp: str):
+    def calculate_time_since_snapshot(self, snapshot_timestamp):
         """Calculate hours since snapshot was taken."""
-        snapshot_time = datetime.fromisoformat(snapshot_timestamp)
+        if isinstance(snapshot_timestamp, datetime):
+            snapshot_time = snapshot_timestamp
+        else:
+            snapshot_time = datetime.fromisoformat(str(snapshot_timestamp))
+        if snapshot_time.tzinfo is not None:
+            snapshot_time = snapshot_time.replace(tzinfo=None)
         now = datetime.now()
         delta = now - snapshot_time
         return delta.total_seconds() / 3600  # hours
 
-    def fetch_current_price(self, address: str):
-        """Fetch current price and market cap for a token."""
+    def fetch_current_price(self, address: str, blockchain: str):
+        """Fetch current price and market cap for a token (Birdeye)."""
         try:
-            data = self.fetcher.fetch_dexscreener_data(address)
+            data = self.fetcher.fetch_birdeye_data(address, blockchain=blockchain)
             if data:
                 return {
                     'price': data.get('price_usd'),
                     'liquidity': data.get('liquidity_usd'),
-                    'total_liquidity': data.get('total_liquidity'),
+                    'total_liquidity': data.get('total_liquidity') or data.get('liquidity_usd'),
                     'market_cap': data.get('market_cap'),
                     'exists': True
                 }
             else:
-                return {'price': None, 'liquidity': None, 'total_liquidity': None, 'market_cap': None, 'exists': False}
+                return {'price': None, 'liquidity': None, 'total_liquidity': None, 'market_cap': None, 'exists': None}
         except Exception as e:
             print(f"⚠️  Error fetching price: {e}")
-            return {'price': None, 'liquidity': None, 'total_liquidity': None, 'market_cap': None, 'exists': False}
+            return {'price': None, 'liquidity': None, 'total_liquidity': None, 'market_cap': None, 'exists': None}
 
     def calculate_gain_loss(self, entry_price: float, current_price: float):
         """Calculate percentage gain/loss."""
@@ -77,21 +84,39 @@ class PerformanceTracker:
         return ((current_price - entry_price) / entry_price) * 100
 
     def update_token_performance(self, call_id: int, contract_address: str,
-                                entry_price: float, snapshot_timestamp: str):
+                                entry_price: float, snapshot_timestamp: str,
+                                decision_status: str, blockchain: str):
         """Update performance data for a single token."""
         hours_since = self.calculate_time_since_snapshot(snapshot_timestamp)
         minutes_since = hours_since * 60
 
         # Fetch current price
         print(f"  Checking {contract_address}...")
-        current_data = self.fetch_current_price(contract_address)
+        current_data = self.fetch_current_price(contract_address, blockchain)
 
-        if not current_data['exists']:
+        if current_data['exists'] is False:
             print(f"  ❌ Token no longer exists or not found")
             self.db.insert_or_update_performance(call_id, {
                 'token_still_alive': 'no',
                 'rug_pull_occurred': 'yes'
             })
+            self.db.insert_performance_history(call_id, {
+                'decision_status': decision_status,
+                'reference_price': entry_price,
+                'price_usd': None,
+                'liquidity_usd': None,
+                'total_liquidity': None,
+                'market_cap': None,
+                'gain_loss_pct': None,
+                'price_change_pct': None,
+                'liquidity_change_pct': None,
+                'market_cap_change_pct': None,
+                'token_still_alive': 'no',
+                'rug_pull_occurred': 'yes'
+            })
+            return
+        if current_data['exists'] is None:
+            print(f"  ⚠️  Market data unavailable, skipping update")
             return
 
         current_price = current_data['price']
@@ -151,6 +176,12 @@ class PerformanceTracker:
             print(f"  🚨 RUG PULL SUSPECTED - Price crashed 90%+")
 
         # Update time-based price tracking
+        if minutes_since >= 15 and (not existing or not existing.get('price_15m_later') is None):
+            update_data['price_15m_later'] = current_price
+
+        if minutes_since >= 30 and (not existing or not existing.get('price_30m_later') is None):
+            update_data['price_30m_later'] = current_price
+
         if hours_since >= 1 and (not existing or not existing['price_1h_later']):
             update_data['price_1h_later'] = current_price
 
@@ -170,12 +201,51 @@ class PerformanceTracker:
 
             if not existing or not existing['max_gain_observed'] or capped_gain_loss > existing['max_gain_observed']:
                 update_data['max_gain_observed'] = capped_gain_loss
+                # Record time to max gain and timestamp when a new max is hit
+                update_data['time_to_max_gain_hours'] = hours_since
+                update_data['max_gain_timestamp'] = datetime.now().isoformat()
 
             if not existing or not existing['max_loss_observed'] or capped_gain_loss < existing['max_loss_observed']:
                 update_data['max_loss_observed'] = capped_gain_loss
 
+        # Track time to rug — record hours since snapshot when rug is first detected
+        if update_data.get('rug_pull_occurred') in ('yes', True):
+            if not existing or not existing.get('time_to_rug_hours'):
+                update_data['time_to_rug_hours'] = hours_since
+
         # Save to database
         self.db.insert_or_update_performance(call_id, update_data)
+
+        # Insert time-series history snapshot
+        last_history = self.db.get_latest_performance_history(call_id)
+        price_change_pct = None
+        liquidity_change_pct = None
+        market_cap_change_pct = None
+        if last_history:
+            last_price = last_history.get('price_usd')
+            last_liq = last_history.get('liquidity_usd')
+            last_mcap = last_history.get('market_cap')
+            if last_price:
+                price_change_pct = ((current_price - last_price) / last_price) * 100
+            if current_liquidity and last_liq:
+                liquidity_change_pct = ((current_liquidity - last_liq) / last_liq) * 100
+            if current_mcap and last_mcap:
+                market_cap_change_pct = ((current_mcap - last_mcap) / last_mcap) * 100
+
+        self.db.insert_performance_history(call_id, {
+            'decision_status': decision_status,
+            'reference_price': entry_price,
+            'price_usd': current_price,
+            'liquidity_usd': current_liquidity,
+            'total_liquidity': total_liquidity,
+            'market_cap': current_mcap,
+            'gain_loss_pct': gain_loss,
+            'price_change_pct': price_change_pct,
+            'liquidity_change_pct': liquidity_change_pct,
+            'market_cap_change_pct': market_cap_change_pct,
+            'token_still_alive': update_data.get('token_still_alive'),
+            'rug_pull_occurred': update_data.get('rug_pull_occurred'),
+        })
         print(f"  ✅ Performance updated (checkpoint: {checkpoint_type})")
 
     def run_update(self, limit: int = None, min_age_hours: float = 0):
@@ -226,11 +296,15 @@ class PerformanceTracker:
             print(f"[{i}/{len(tokens)}] {token['token_symbol']} from {token['source']}")
 
             try:
+                # Use actual trade entry price when available, otherwise fall back to call price
+                entry_price = token.get('trade_entry_price') or token.get('call_price')
                 self.update_token_performance(
                     call_id=token['call_id'],
                     contract_address=token['contract_address'],
-                    entry_price=token['entry_price'],
-                    snapshot_timestamp=token['snapshot_timestamp']
+                    entry_price=entry_price,
+                    snapshot_timestamp=token['snapshot_timestamp'],
+                    decision_status=token['my_decision'],
+                    blockchain=token['blockchain']
                 )
                 updated_count += 1
             except Exception as e:
@@ -246,7 +320,7 @@ class PerformanceTracker:
             for source in source_list:
                 sources_to_update.add(source)
 
-            # Rate limiting to avoid API throttling (reduced for 15-min intervals)
+            # Rate limiting to avoid API throttling
             if i < len(tokens):
                 time.sleep(1.0)  # Wait 1 second between requests
 

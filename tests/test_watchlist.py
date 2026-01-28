@@ -27,12 +27,8 @@ def setup_watchlist_demo():
         return
 
     # Get token info
-    token_name = "Bonk"
-    token_symbol = "BONK"
-    if data.get('raw_data', {}).get('dexscreener'):
-        dex_raw = data['raw_data']['dexscreener']
-        token_name = dex_raw.get('baseToken', {}).get('name', 'Bonk')
-        token_symbol = dex_raw.get('baseToken', {}).get('symbol', 'BONK')
+    token_name = data.get('token_name') or "Bonk"
+    token_symbol = data.get('token_symbol') or "BONK"
 
     # Insert call
     call_id = db.insert_call(

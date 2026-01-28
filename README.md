@@ -4,17 +4,16 @@ A comprehensive CLI tool for analyzing memecoin trading opportunities on Solana 
 
 ## Features
 
-- **Real-time Analysis**: Fetch live data from DexScreener and RugCheck APIs
+- **Real-time Analysis**: Fetch live data from Birdeye
 - **Safety Scoring**: Automated safety score (0-10) based on multiple risk factors
 - **Smart Money Tracking**: Track profitable wallets and detect when they're holding analyzed tokens
 - **Red Flag Detection**: Automatic detection of critical risks (low liquidity, mint authority, whale concentration)
 - **Decision Tracking**: Record your trading decisions with notes and emotional state
 - **Watchlist Monitoring**: Track tokens marked as "WATCH" and monitor their performance before entering
 - **Source Performance**: Track which sources provide the best calls over time
-- **Performance Tracking**: Automated script to track token prices over time (1h, 24h, 7d, 30d)
+- **Performance Tracking**: 5‑minute time‑series snapshots for active WATCH/TRADE positions
 - **Rug Pull Detection**: Automatic detection of rugged tokens via liquidity drops
-- **SQLite Database**: All data saved locally for historical analysis
-- **No API Keys Required**: Uses free public APIs
+- **SQLite / Supabase**: Local SQLite by default, Supabase (PostgreSQL) if DATABASE_URL is set
 
 ## Installation
 
@@ -29,14 +28,19 @@ cd sweetmemerep
 pip install -r requirements.txt
 ```
 
-3. **Set up automatic hourly tracking** (recommended):
+3. Set your Birdeye API key:
+```bash
+export BIRDEYE_API_KEY="your_api_key"
+```
+
+4. **Set up automatic tracking** (recommended):
 ```bash
 ./setup_tracking.sh
 ```
 
-This sets up automatic performance tracking every hour so your source stats are always up-to-date. The tracker runs in the background via cron (Linux) or launchd (macOS).
+This sets up automated performance tracking. The tracker runs in the background via cron (Linux) or launchd (macOS).
 
-That's it! No API keys needed.
+That's it! Birdeye is required for market data.
 
 ## Quick Start
 
@@ -348,14 +352,12 @@ sweetmemerep/
 
 ## APIs Used
 
-### DexScreener
-- **Endpoint**: `https://api.dexscreener.com/latest/dex/tokens/{address}`
-- **Data**: Price, liquidity, volume, market cap, pair creation time
-- **Rate Limit**: Public, no auth required
+### Birdeye
+- **Data**: Price, liquidity, volume, market cap, holders
+- **Auth**: API key required (`BIRDEYE_API_KEY`)
 
-### RugCheck
-- **Endpoint**: `https://api.rugcheck.xyz/v1/tokens/{address}/report`
-- **Data**: Mint/freeze authority, holder distribution, security score
+### GoPlus
+- **Data**: Mint/freeze authority, holder distribution, taxes, honeypot signals
 - **Rate Limit**: Public, no auth required
 
 ## Tips for Best Results
@@ -368,7 +370,7 @@ sweetmemerep/
 
 ## Limitations
 
-- Holder count may not be available for all tokens (RugCheck limitation)
+- Holder count may not be available for all tokens (GoPlus limitation)
 - Data accuracy depends on API availability
 - Historical price tracking requires manual updates
 - No automated trading functionality

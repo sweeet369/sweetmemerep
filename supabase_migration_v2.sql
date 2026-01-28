@@ -134,10 +134,31 @@ END $$;
 -- STEP 3: Create optimized indexes
 -- ================================================
 
+-- STEP 2b: Create performance_history table if missing
+-- ================================================
+CREATE TABLE IF NOT EXISTS performance_history (
+    history_id SERIAL PRIMARY KEY,
+    call_id INTEGER NOT NULL REFERENCES calls_received(call_id),
+    timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    decision_status VARCHAR(20) NOT NULL,
+    reference_price REAL,
+    price_usd REAL,
+    liquidity_usd REAL,
+    total_liquidity REAL,
+    market_cap REAL,
+    gain_loss_pct REAL,
+    price_change_pct REAL,
+    liquidity_change_pct REAL,
+    market_cap_change_pct REAL,
+    token_still_alive BOOLEAN DEFAULT TRUE,
+    rug_pull_occurred BOOLEAN DEFAULT FALSE
+);
+
 -- Foreign key indexes (if not exist)
 CREATE INDEX IF NOT EXISTS idx_initial_snapshot_call_id ON initial_snapshot(call_id);
 CREATE INDEX IF NOT EXISTS idx_my_decisions_call_id ON my_decisions(call_id);
 CREATE INDEX IF NOT EXISTS idx_performance_tracking_call_id ON performance_tracking(call_id);
+CREATE INDEX IF NOT EXISTS idx_performance_history_call_id ON performance_history(call_id);
 
 -- Lookup indexes
 CREATE INDEX IF NOT EXISTS idx_calls_received_contract ON calls_received(contract_address);
@@ -149,6 +170,7 @@ CREATE INDEX IF NOT EXISTS idx_decisions_type ON my_decisions(my_decision);
 
 -- Performance tracking indexes
 CREATE INDEX IF NOT EXISTS idx_perf_last_updated ON performance_tracking(last_updated DESC);
+CREATE INDEX IF NOT EXISTS idx_performance_history_timestamp ON performance_history(timestamp DESC);
 
 -- Timestamp-based indexes for time queries
 CREATE INDEX IF NOT EXISTS idx_calls_timestamp ON calls_received(timestamp_received DESC);
