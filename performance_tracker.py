@@ -7,7 +7,11 @@ It will fetch current prices and update the performance_tracking table.
 """
 
 import time
+import json
+import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
+from typing import Dict, Any, List, Optional
 from database import MemecoinDatabase
 from data_fetcher import MemecoinDataFetcher
 from app_logger import tracker_logger, log_performance
@@ -16,10 +20,20 @@ from app_logger import tracker_logger, log_performance
 class PerformanceTracker:
     """Tracks token performance over time."""
 
-    def __init__(self):
-        """Initialize tracker with database and fetcher."""
+    # Dead letter queue file for failed requests
+    DEAD_LETTER_FILE = "failed_requests.json"
+    
+    def __init__(self, max_workers: int = 3, use_parallel: bool = True):
+        """Initialize tracker with database and fetcher.
+        
+        Args:
+            max_workers: Maximum number of parallel threads for API calls
+            use_parallel: Whether to use parallel processing for token updates
+        """
         self.db = MemecoinDatabase()
         self.fetcher = MemecoinDataFetcher()
+        self.max_workers = max_workers
+        self.use_parallel = use_parallel
 
     def get_all_tracked_tokens(self):
         """Get all tokens that need performance tracking (WATCH or open TRADE positions only)."""
@@ -327,38 +341,15 @@ class PerformanceTracker:
         updated_count = 0
         error_count = 0
 
-        # Update each token
-        for i, token in enumerate(tokens, 1):
-            print(f"[{i}/{len(tokens)}] {token['token_symbol']} from {token['source']}")
-
-            try:
-                # Use actual trade entry price when available, otherwise fall back to call price
-                entry_price = token.get('trade_entry_price') or token.get('call_price')
-                self.update_token_performance(
-                    call_id=token['call_id'],
-                    contract_address=token['contract_address'],
-                    entry_price=entry_price,
-                    snapshot_timestamp=token['snapshot_timestamp'],
-                    decision_status=token['my_decision'],
-                    blockchain=token['blockchain']
-                )
-                updated_count += 1
-            except Exception as e:
-                error_count += 1
-                tracker_logger.error("Failed to update token",
-                    token=token['token_symbol'],
-                    call_id=token['call_id'],
-                    error=str(e)
-                )
-
-            # Split comma-separated sources and add each individually
-            source_list = [s.strip() for s in token['source'].split(',') if s.strip()]
-            for source in source_list:
-                sources_to_update.add(source)
-
-            # Rate limiting to avoid API throttling
-            if i < len(tokens):
-                time.sleep(1.0)  # Wait 1 second between requests
+        # Update each token (parallel or sequential)
+        if self.use_parallel and len(tokens) > 1:
+            updated_count, error_count = self._update_tokens_parallel(
+                tokens, sources_to_update
+            )
+        else:
+            updated_count, error_count = self._update_tokens_sequential(
+                tokens, sources_to_update
+            )
 
         # Update source performance stats for each individual source
         print(f"\n📈 Updating source statistics...")
@@ -409,6 +400,219 @@ class PerformanceTracker:
         if summary['worst_loss']:
             print(f"Worst Loss: {summary['worst_loss']:.2f}%")
 
+    def _update_single_token(self, token: Dict[str, Any]) -> Dict[str, Any]:
+        """Update a single token's performance. Used for parallel processing.
+        
+        Returns:
+            Dict with 'success', 'token', 'sources', and optional 'error' keys
+        """
+        result = {
+            'success': False,
+            'token': token,
+            'sources': set(),
+            'error': None
+        }
+        
+        try:
+            print(f"  Checking {token['token_symbol']} from {token['source']}...")
+            
+            # Use actual trade entry price when available, otherwise fall back to call price
+            entry_price = token.get('trade_entry_price') or token.get('call_price')
+            self.update_token_performance(
+                call_id=token['call_id'],
+                contract_address=token['contract_address'],
+                entry_price=entry_price,
+                snapshot_timestamp=token['snapshot_timestamp'],
+                decision_status=token['my_decision'],
+                blockchain=token['blockchain']
+            )
+            result['success'] = True
+            
+            # Split comma-separated sources and add each individually
+            source_list = [s.strip() for s in token['source'].split(',') if s.strip()]
+            result['sources'] = set(source_list)
+            
+        except Exception as e:
+            result['error'] = str(e)
+            tracker_logger.error("Failed to update token",
+                token=token['token_symbol'],
+                call_id=token['call_id'],
+                error=str(e)
+            )
+            # Add to dead letter queue
+            self._add_to_dead_letter(token, str(e))
+        
+        return result
+    
+    def _update_tokens_parallel(self, tokens: List[Dict], sources_to_update: set) -> tuple:
+        """Update tokens in parallel using ThreadPoolExecutor.
+        
+        Returns:
+            Tuple of (updated_count, error_count)
+        """
+        updated_count = 0
+        error_count = 0
+        
+        print(f"🚀 Using parallel processing with {self.max_workers} workers\n")
+        
+        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            # Submit all tasks
+            future_to_token = {
+                executor.submit(self._update_single_token, token): token 
+                for token in tokens
+            }
+            
+            # Process results as they complete
+            for i, future in enumerate(as_completed(future_to_token), 1):
+                token = future_to_token[future]
+                try:
+                    result = future.result()
+                    if result['success']:
+                        updated_count += 1
+                        sources_to_update.update(result['sources'])
+                        print(f"  ✅ [{i}/{len(tokens)}] {token['token_symbol']} updated")
+                    else:
+                        error_count += 1
+                        print(f"  ❌ [{i}/{len(tokens)}] {token['token_symbol']} failed: {result['error']}")
+                except Exception as e:
+                    error_count += 1
+                    print(f"  ❌ [{i}/{len(tokens)}] {token['token_symbol']} exception: {e}")
+        
+        return updated_count, error_count
+    
+    def _update_tokens_sequential(self, tokens: List[Dict], sources_to_update: set) -> tuple:
+        """Update tokens sequentially with rate limiting.
+        
+        Returns:
+            Tuple of (updated_count, error_count)
+        """
+        updated_count = 0
+        error_count = 0
+        
+        for i, token in enumerate(tokens, 1):
+            print(f"[{i}/{len(tokens)}] {token['token_symbol']} from {token['source']}")
+
+            try:
+                # Use actual trade entry price when available, otherwise fall back to call price
+                entry_price = token.get('trade_entry_price') or token.get('call_price')
+                self.update_token_performance(
+                    call_id=token['call_id'],
+                    contract_address=token['contract_address'],
+                    entry_price=entry_price,
+                    snapshot_timestamp=token['snapshot_timestamp'],
+                    decision_status=token['my_decision'],
+                    blockchain=token['blockchain']
+                )
+                updated_count += 1
+            except Exception as e:
+                error_count += 1
+                tracker_logger.error("Failed to update token",
+                    token=token['token_symbol'],
+                    call_id=token['call_id'],
+                    error=str(e)
+                )
+                # Add to dead letter queue
+                self._add_to_dead_letter(token, str(e))
+
+            # Split comma-separated sources and add each individually
+            source_list = [s.strip() for s in token['source'].split(',') if s.strip()]
+            for source in source_list:
+                sources_to_update.add(source)
+
+            # Rate limiting to avoid API throttling
+            if i < len(tokens):
+                time.sleep(1.0)  # Wait 1 second between requests
+        
+        return updated_count, error_count
+    
+    def _add_to_dead_letter(self, token: Dict[str, Any], error: str) -> None:
+        """Add a failed token update to the dead letter queue.
+        
+        Args:
+            token: Token data that failed to update
+            error: Error message
+        """
+        dead_letter_entry = {
+            'timestamp': datetime.now().isoformat(),
+            'call_id': token.get('call_id'),
+            'token_symbol': token.get('token_symbol'),
+            'contract_address': token.get('contract_address'),
+            'blockchain': token.get('blockchain'),
+            'source': token.get('source'),
+            'error': error
+        }
+        
+        try:
+            # Load existing dead letter queue
+            dead_letters = []
+            if os.path.exists(self.DEAD_LETTER_FILE):
+                with open(self.DEAD_LETTER_FILE, 'r') as f:
+                    dead_letters = json.load(f)
+            
+            # Add new entry
+            dead_letters.append(dead_letter_entry)
+            
+            # Keep only last 1000 entries to prevent file bloat
+            dead_letters = dead_letters[-1000:]
+            
+            # Save back to file
+            with open(self.DEAD_LETTER_FILE, 'w') as f:
+                json.dump(dead_letters, f, indent=2)
+                
+            tracker_logger.warning("Added to dead letter queue",
+                token=token.get('token_symbol'),
+                call_id=token.get('call_id'))
+        except Exception as e:
+            tracker_logger.error("Failed to write to dead letter queue", error=str(e))
+    
+    def get_dead_letter_queue(self) -> List[Dict[str, Any]]:
+        """Get all entries from the dead letter queue.
+        
+        Returns:
+            List of dead letter entries
+        """
+        if not os.path.exists(self.DEAD_LETTER_FILE):
+            return []
+        
+        try:
+            with open(self.DEAD_LETTER_FILE, 'r') as f:
+                return json.load(f)
+        except Exception as e:
+            tracker_logger.error("Failed to read dead letter queue", error=str(e))
+            return []
+    
+    def clear_dead_letter_queue(self) -> None:
+        """Clear the dead letter queue."""
+        if os.path.exists(self.DEAD_LETTER_FILE):
+            try:
+                os.remove(self.DEAD_LETTER_FILE)
+                tracker_logger.info("Dead letter queue cleared")
+            except Exception as e:
+                tracker_logger.error("Failed to clear dead letter queue", error=str(e))
+    
+    def check_api_health(self) -> Dict[str, Any]:
+        """Check health of all APIs before running updates.
+        
+        Returns:
+            Dict with health status for each API
+        """
+        print("\n🔍 Checking API health...")
+        health = self.fetcher.check_api_health()
+        
+        all_healthy = all(h['healthy'] for h in health.values())
+        
+        for api_name, status in health.items():
+            if status['healthy']:
+                print(f"  ✅ {api_name}: Healthy ({status['latency_ms']}ms)")
+            else:
+                error = status.get('error', 'Unknown error')
+                print(f"  ❌ {api_name}: Unhealthy - {error}")
+        
+        if not all_healthy:
+            print("\n⚠️  Some APIs are unhealthy. Updates may fail.")
+        
+        return health
+    
     def close(self):
         """Close database connection."""
         self.db.close()
@@ -432,10 +636,46 @@ def main():
                        help='Only update tokens older than N hours')
     parser.add_argument('-s', '--summary', action='store_true',
                        help='Show summary only (no updates)')
+    parser.add_argument('--sequential', action='store_true',
+                       help='Use sequential processing instead of parallel')
+    parser.add_argument('-w', '--workers', type=int, default=3,
+                       help='Number of parallel workers (default: 3)')
+    parser.add_argument('--health-check', action='store_true',
+                       help='Check API health before running')
+    parser.add_argument('--show-dead-letter', action='store_true',
+                       help='Show dead letter queue and exit')
+    parser.add_argument('--clear-dead-letter', action='store_true',
+                       help='Clear dead letter queue and exit')
 
     args = parser.parse_args()
 
-    tracker = PerformanceTracker()
+    tracker = PerformanceTracker(
+        max_workers=args.workers,
+        use_parallel=not args.sequential
+    )
+    
+    # Handle dead letter queue commands
+    if args.show_dead_letter:
+        dead_letters = tracker.get_dead_letter_queue()
+        print(f"\n📋 Dead Letter Queue ({len(dead_letters)} entries)")
+        print("="*60)
+        for entry in dead_letters[-20:]:  # Show last 20
+            print(f"\n  {entry['timestamp']}")
+            print(f"    Token: {entry['token_symbol']} ({entry['blockchain']})")
+            print(f"    Error: {entry['error'][:100]}...")
+        return
+    
+    if args.clear_dead_letter:
+        tracker.clear_dead_letter_queue()
+        print("✅ Dead letter queue cleared")
+        return
+    
+    # Check API health if requested
+    if args.health_check:
+        health = tracker.check_api_health()
+        if not all(h['healthy'] for h in health.values()):
+            print("\n❌ Some APIs are unhealthy. Exiting.")
+            return
 
     try:
         if args.summary:

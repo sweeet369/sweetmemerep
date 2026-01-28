@@ -1,10 +1,11 @@
 # 🪙 Memecoin Trading Analyzer
 
-A comprehensive CLI tool for analyzing memecoin trading opportunities on Solana and BNB Chain. Track calls, analyze safety metrics, record decisions, and measure source performance over time.
+A comprehensive CLI tool for analyzing memecoin trading opportunities across multiple blockchains. Track calls, analyze safety metrics, record decisions, and measure source performance over time.
 
 ## Features
 
-- **Real-time Analysis**: Fetch live data from Birdeye
+- **Multi-Chain Support**: Analyze tokens on Solana, Base, Ethereum, BSC, Polygon, and Arbitrum
+- **Real-time Analysis**: Fetch live data from Birdeye with DexScreener fallback
 - **Safety Scoring**: Automated safety score (0-10) based on multiple risk factors
 - **Smart Money Tracking**: Track profitable wallets and detect when they're holding analyzed tokens
 - **Red Flag Detection**: Automatic detection of critical risks (low liquidity, mint authority, whale concentration)
@@ -13,6 +14,8 @@ A comprehensive CLI tool for analyzing memecoin trading opportunities on Solana 
 - **Source Performance**: Track which sources provide the best calls over time
 - **Performance Tracking**: 5‑minute time‑series snapshots for active WATCH/TRADE positions
 - **Rug Pull Detection**: Automatic detection of rugged tokens via liquidity drops
+- **Parallel Processing**: Fast batch updates with configurable worker threads
+- **API Health Checks**: Verify API connectivity before running updates
 - **SQLite / Supabase**: Local SQLite by default, Supabase (PostgreSQL) if DATABASE_URL is set
 
 ## Installation
@@ -339,26 +342,118 @@ python3 test_e2e.py
 ```
 sweetmemerep/
 ├── analyzer.py                # Main CLI interface
-├── database.py                # SQLite database manager
-├── data_fetcher.py            # API data fetching
-├── performance_tracker.py     # Automated performance tracking
+├── database.py                # SQLite/PostgreSQL database manager
+├── data_fetcher.py            # API data fetching with caching & fallback
+├── performance_tracker.py     # Automated performance tracking with parallel processing
+├── app_logger.py              # Structured logging
+├── config.py                  # Configuration management
+├── display.py                 # UI display utilities
 ├── setup_tracking.sh          # One-click setup for hourly tracking
 ├── requirements.txt           # Python dependencies
-├── test_e2e.py               # End-to-end tests
-├── README.md                 # This file
-├── PERFORMANCE_TRACKING.md   # Performance tracking guide
-└── .gitignore                # Git ignore rules
+├── tests/                     # Test suite
+│   ├── test_core_logic.py     # Core functionality tests
+│   ├── test_goplus.py         # GoPlus API tests
+│   ├── test_postgres_integration.py  # PostgreSQL tests
+│   └── test_error_paths.py    # Error handling tests
+├── README.md                  # This file
+├── PERFORMANCE_TRACKING.md    # Performance tracking guide
+└── .github/workflows/         # GitHub Actions CI/CD
+    └── tracker.yml            # Automated tracking workflow
 ```
+
+## Multi-Chain Support
+
+The analyzer supports multiple blockchains with automatic chain detection:
+
+### Supported Chains
+
+| Chain | Identifier | Native Token | Notes |
+|-------|------------|--------------|-------|
+| **Solana** | `solana` | SOL | Primary support, all features |
+| **Base** | `base` | ETH | Full support via GoPlus |
+| **Ethereum** | `ethereum` | ETH | Full support via GoPlus |
+| **BSC** | `bsc` | BNB | Full support via GoPlus |
+| **Polygon** | `polygon` | MATIC | Full support via GoPlus |
+| **Arbitrum** | `arbitrum` | ETH | Full support via GoPlus |
+
+### Analyzing Tokens on Different Chains
+
+When analyzing a token, you'll be prompted to select the blockchain:
+
+```
+Select blockchain:
+  [1] Solana (default)
+  [2] Base
+  [3] Ethereum
+  [4] BSC
+  [5] Polygon
+  [6] Arbitrum
+```
+
+Or specify directly in your workflow tools.
+
+### Chain-Specific Considerations
+
+- **Solana**: Fastest analysis, most detailed data from Birdeye
+- **EVM Chains** (Base, Ethereum, BSC, Polygon, Arbitrum): Security data from GoPlus, market data from Birdeye
 
 ## APIs Used
 
-### Birdeye
+### Birdeye (Primary)
 - **Data**: Price, liquidity, volume, market cap, holders
 - **Auth**: API key required (`BIRDEYE_API_KEY`)
+- **Chains**: All supported chains
 
-### GoPlus
+### GoPlus Security (Cross-Chain)
 - **Data**: Mint/freeze authority, holder distribution, taxes, honeypot signals
 - **Rate Limit**: Public, no auth required
+- **Chains**: All supported chains
+
+### DexScreener (Fallback)
+- **Data**: Price, liquidity, volume (used when Birdeye fails)
+- **Auth**: None required
+- **Chains**: All supported chains
+
+## Advanced Features
+
+### Parallel Processing
+
+Speed up batch updates with parallel API calls:
+
+```bash
+# Use 5 parallel workers (default is 3)
+python3 performance_tracker.py --workers 5
+
+# Use sequential processing
+python3 performance_tracker.py --sequential
+```
+
+### API Health Checks
+
+Verify API connectivity before running updates:
+
+```bash
+python3 performance_tracker.py --health-check
+```
+
+### Dead Letter Queue
+
+Failed token updates are logged for later analysis:
+
+```bash
+# View failed updates
+python3 performance_tracker.py --show-dead-letter
+
+# Clear the queue
+python3 performance_tracker.py --clear-dead-letter
+```
+
+### Request Caching
+
+API responses are cached for 60 seconds to reduce redundant calls:
+- Same token queried multiple times in quick succession uses cache
+- Automatic cache expiration and cleanup
+- Improves performance and reduces API rate limit hits
 
 ## Tips for Best Results
 
@@ -374,6 +469,26 @@ sweetmemerep/
 - Data accuracy depends on API availability
 - Historical price tracking requires manual updates
 - No automated trading functionality
+- Token age estimation may be inaccurate for some chains
+- Some advanced security features require higher-tier API access
+
+## Testing
+
+Run the test suite:
+
+```bash
+# Run all tests
+python3 -m pytest tests/
+
+# Run specific test files
+python3 -m pytest tests/test_core_logic.py
+python3 -m pytest tests/test_goplus.py
+python3 -m pytest tests/test_error_paths.py
+
+# Run PostgreSQL integration tests (requires DATABASE_URL)
+export DATABASE_URL="postgresql://..."
+python3 -m pytest tests/test_postgres_integration.py
+```
 
 ## Safety Ratings
 

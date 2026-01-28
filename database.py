@@ -120,8 +120,9 @@ class MemecoinDatabase:
         """Convert boolean value to appropriate type for database.
 
         PostgreSQL uses native BOOLEAN, SQLite uses TEXT 'yes'/'no'.
+        'unknown' is stored as NULL (we don't know the state).
         """
-        if value is None:
+        if value is None or value == 'unknown':
             return None
         if self.db_type == 'postgres':
             # PostgreSQL: use native boolean

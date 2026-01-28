@@ -285,6 +285,13 @@ def display_analysis(symbol: str, name: str, source: str, data: TokenData) -> No
     volume = data.get('volume_24h', 0)
     print(f"📈 24h Volume: {format_currency(volume)}")
 
+    # Volume/Liquidity ratio
+    liquidity_val = data.get('liquidity_usd', 0)
+    if liquidity_val and liquidity_val > 0 and volume:
+        vol_liq = volume / liquidity_val
+        vl_emoji = "🔥" if vol_liq > 2.0 else "📊" if vol_liq > 1.0 else "➡️" if vol_liq > 0.3 else "📉"
+        print(f"{vl_emoji} Vol/Liq Ratio: {vol_liq:.2f}x")
+
     market_cap = data.get('market_cap')
     if market_cap:
         print(f"💰 Market Cap: {format_currency(market_cap)}")

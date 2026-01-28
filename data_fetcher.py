@@ -1,8 +1,8 @@
 import random
 import requests
 import time
-from datetime import datetime
-from functools import wraps
+from datetime import datetime, timedelta
+from functools import wraps, lru_cache
 from typing import Dict, Any, Optional, List, Callable, TypeVar
 
 # Import structured logging
@@ -13,6 +13,59 @@ from config import BIRDEYE_API_KEY
 
 # Type variable for generic return types
 T = TypeVar('T')
+
+
+# =============================================================================
+# CACHING - Simple TTL cache for API responses
+# =============================================================================
+
+class TTLCache:
+    """Simple time-to-live cache for API responses."""
+    
+    def __init__(self, ttl_seconds: int = 60):
+        self.ttl = ttl_seconds
+        self._cache: Dict[str, Dict[str, Any]] = {}
+    
+    def get(self, key: str) -> Optional[Dict[str, Any]]:
+        """Get cached value if not expired."""
+        if key not in self._cache:
+            return None
+        cached = self._cache[key]
+        if datetime.now() - cached['timestamp'] > timedelta(seconds=self.ttl):
+            del self._cache[key]
+            return None
+        return cached['data']
+    
+    def set(self, key: str, data: Dict[str, Any]) -> None:
+        """Set cached value with timestamp."""
+        self._cache[key] = {
+            'data': data,
+            'timestamp': datetime.now()
+        }
+    
+    def clear(self) -> None:
+        """Clear all cached values."""
+        self._cache.clear()
+    
+    def cleanup_expired(self) -> int:
+        """Remove expired entries and return count cleaned."""
+        now = datetime.now()
+        expired = [
+            k for k, v in self._cache.items()
+            if now - v['timestamp'] > timedelta(seconds=self.ttl)
+        ]
+        for k in expired:
+            del self._cache[k]
+        return len(expired)
+
+
+# Global cache for API responses (60 second TTL)
+_api_cache = TTLCache(ttl_seconds=60)
+
+
+def get_api_cache() -> TTLCache:
+    """Get the global API cache instance."""
+    return _api_cache
 
 
 # =============================================================================
@@ -186,22 +239,32 @@ class MemecoinDataFetcher:
     BIRDEYE_API = "https://public-api.birdeye.so/defi/token_overview"
     GOPLUS_EVM_API = "https://api.gopluslabs.io/api/v1/token_security/{chain_id}"
     GOPLUS_SOLANA_API = "https://api.gopluslabs.io/api/v1/solana/token_security"
+    DEXSCREENER_API = "https://api.dexscreener.com/latest/dex/tokens"
 
     # Chain configuration: maps chain names to API-specific values
     # goplus_chain_id: EVM numeric chain ID for GoPlus, or 'solana' for Solana
+    # dexscreener_chain_id: Chain identifier for DexScreener
     CHAIN_CONFIG = {
-        'solana':   {'birdeye': 'solana',   'goplus_chain_id': 'solana',  'native': 'SOL'},
-        'base':     {'birdeye': 'base',     'goplus_chain_id': '8453',    'native': 'ETH'},
-        'ethereum': {'birdeye': 'ethereum', 'goplus_chain_id': '1',       'native': 'ETH'},
-        'bsc':      {'birdeye': 'bsc',      'goplus_chain_id': '56',      'native': 'BNB'},
-        'polygon':  {'birdeye': 'polygon',  'goplus_chain_id': '137',     'native': 'MATIC'},
-        'arbitrum': {'birdeye': 'arbitrum', 'goplus_chain_id': '42161',   'native': 'ETH'},
+        'solana':   {'birdeye': 'solana',   'goplus_chain_id': 'solana',  'native': 'SOL', 'dexscreener': 'solana'},
+        'base':     {'birdeye': 'base',     'goplus_chain_id': '8453',    'native': 'ETH', 'dexscreener': 'base'},
+        'ethereum': {'birdeye': 'ethereum', 'goplus_chain_id': '1',       'native': 'ETH', 'dexscreener': 'ethereum'},
+        'bsc':      {'birdeye': 'bsc',      'goplus_chain_id': '56',      'native': 'BNB', 'dexscreener': 'bsc'},
+        'polygon':  {'birdeye': 'polygon',  'goplus_chain_id': '137',     'native': 'MATIC', 'dexscreener': 'polygon'},
+        'arbitrum': {'birdeye': 'arbitrum', 'goplus_chain_id': '42161',   'native': 'ETH', 'dexscreener': 'arbitrum'},
     }
 
-    def __init__(self, timeout: int = 10, retry_attempts: int = 2):
-        """Initialize data fetcher with timeout and retry settings."""
+    def __init__(self, timeout: int = 10, retry_attempts: int = 2, max_backoff: float = 60.0):
+        """Initialize data fetcher with timeout and retry settings.
+        
+        Args:
+            timeout: Request timeout in seconds
+            retry_attempts: Number of retry attempts for transient errors
+            max_backoff: Maximum backoff delay in seconds (default 60s)
+        """
         self.timeout = timeout
         self.retry_attempts = retry_attempts
+        self.max_backoff = max_backoff
+        self._api_cache = TTLCache(ttl_seconds=60)  # Instance-level cache
 
     def _make_request(self, url: str, source: str, headers: Optional[Dict] = None,
                       params: Optional[Dict] = None) -> requests.Response:
@@ -234,12 +297,24 @@ class MemecoinDataFetcher:
             raise ParseError(f"{source} returned invalid JSON", source, cause=e)
 
     def fetch_birdeye_data(self, address: str, blockchain: str = 'solana') -> Optional[Dict[str, Any]]:
-        """Fetch market data from Birdeye API (primary source for all chains)."""
+        """Fetch market data from Birdeye API (primary source for all chains).
+        
+        Uses caching to reduce API calls for the same token within 60 seconds.
+        Falls back to DexScreener if Birdeye fails.
+        """
         chain_config = self.CHAIN_CONFIG.get(blockchain.lower(), self.CHAIN_CONFIG['solana'])
+        cache_key = f"birdeye:{blockchain}:{address}"
+        
+        # Check cache first
+        cached = self._api_cache.get(cache_key)
+        if cached:
+            api_logger.debug("Cache hit for Birdeye", token=address[:8], blockchain=blockchain)
+            return cached
 
         if not BIRDEYE_API_KEY:
-            api_logger.warning("Birdeye API key not configured", token=address[:8])
-            return None
+            api_logger.warning("Birdeye API key not configured, trying DexScreener fallback", 
+                             token=address[:8], blockchain=blockchain)
+            return self._fetch_dexscreener_fallback(address, blockchain)
 
         headers = {
             "X-API-KEY": BIRDEYE_API_KEY,
@@ -265,7 +340,7 @@ class MemecoinDataFetcher:
                     data = result['data']
                     ctx['has_data'] = True
 
-                    return {
+                    result_data = {
                         'price_usd': float(data.get('price', 0)),
                         'liquidity_usd': float(data.get('liquidity', 0)),
                         'main_pool_liquidity': float(data.get('liquidity', 0)),
@@ -288,6 +363,10 @@ class MemecoinDataFetcher:
                         'logo_uri': data.get('logoURI'),
                         'raw_data': data
                     }
+                    
+                    # Cache successful result
+                    self._api_cache.set(cache_key, result_data)
+                    return result_data
 
                 except RateLimitError as e:
                     api_logger.warning("Birdeye rate limited",
@@ -295,33 +374,34 @@ class MemecoinDataFetcher:
                     if attempt < self.retry_attempts:
                         time.sleep(min(e.retry_after, 10))  # Wait up to 10s for rate limit
                         continue
-                    return None
+                    # Try fallback on rate limit
+                    return self._fetch_dexscreener_fallback(address, blockchain)
 
                 except (TimeoutError, NetworkError, ServerError) as e:
-                    # Transient errors - retry with backoff
+                    # Transient errors - retry with backoff (use max_backoff from instance)
                     if attempt < self.retry_attempts:
-                        delay = (2 ** (attempt - 1)) + random.uniform(0, 1)
+                        delay = min((2 ** (attempt - 1)) + random.uniform(0, 1), self.max_backoff)
                         api_logger.warning("Birdeye transient error, retrying",
                             token=address[:8], error_type=type(e).__name__,
                             error=str(e), attempt=attempt, delay=round(delay, 2))
                         time.sleep(delay)
                         continue
-                    api_logger.error("Birdeye failed after all retries",
-                        token=address[:8], error_type=type(e).__name__,
-                        error=str(e), attempts=self.retry_attempts)
-                    return None
+                    # Try fallback after all retries exhausted
+                    api_logger.warning("Birdeye failed, trying DexScreener fallback",
+                        token=address[:8], error_type=type(e).__name__)
+                    return self._fetch_dexscreener_fallback(address, blockchain)
 
                 except (ClientError, ParseError, NoDataError) as e:
-                    # Permanent errors - don't retry
-                    api_logger.error("Birdeye permanent error",
+                    # Permanent errors - don't retry, try fallback
+                    api_logger.warning("Birdeye permanent error, trying DexScreener fallback",
                         token=address[:8], error_type=type(e).__name__, error=str(e))
-                    return None
+                    return self._fetch_dexscreener_fallback(address, blockchain)
 
                 except (KeyError, ValueError, TypeError) as e:
-                    # Data parsing issues - don't retry
-                    api_logger.error("Birdeye data parsing failed",
+                    # Data parsing issues - don't retry, try fallback
+                    api_logger.warning("Birdeye data parsing failed, trying DexScreener fallback",
                         token=address[:8], error=str(e), error_type=type(e).__name__)
-                    return None
+                    return self._fetch_dexscreener_fallback(address, blockchain)
 
         return None
 
@@ -1054,3 +1134,142 @@ if __name__ == "__main__":
 
     else:
         print("\n❌ Failed to fetch data")
+
+
+    def _fetch_dexscreener_fallback(self, address: str, blockchain: str = 'solana') -> Optional[Dict[str, Any]]:
+        """Fetch market data from DexScreener as fallback when Birdeye fails.
+        
+        Args:
+            address: Token contract address
+            blockchain: Blockchain identifier (solana, base, ethereum, etc.)
+            
+        Returns:
+            Dict with market data or None if failed
+        """
+        chain_config = self.CHAIN_CONFIG.get(blockchain.lower(), self.CHAIN_CONFIG['solana'])
+        
+        # Check cache first
+        cache_key = f"dexscreener:{blockchain}:{address}"
+        cached = self._api_cache.get(cache_key)
+        if cached:
+            api_logger.debug("Cache hit for DexScreener", token=address[:8], blockchain=blockchain)
+            return cached
+        
+        url = f"{self.DEXSCREENER_API}/{address}"
+        
+        try:
+            with log_api_call(api_logger, url, 'GET', token=address[:8], source='DexScreener') as ctx:
+                response = self._make_request(url, 'DexScreener')
+                ctx['status_code'] = response.status_code
+                
+                result = self._parse_json(response, 'DexScreener')
+                
+                if not result.get('pairs'):
+                    api_logger.debug("DexScreener returned no pairs", token=address[:8])
+                    return None
+                
+                # Get the best pair (highest liquidity)
+                pairs = result['pairs']
+                best_pair = max(pairs, key=lambda p: float(p.get('liquidity', {}).get('usd', 0) or 0))
+                
+                ctx['has_data'] = True
+                
+                # Extract data from DexScreener format
+                price_usd = float(best_pair.get('priceUsd', 0))
+                liquidity = float(best_pair.get('liquidity', {}).get('usd', 0) or 0)
+                volume_24h = float(best_pair.get('volume', {}).get('h24', 0) or 0)
+                market_cap = float(best_pair.get('fdv', 0) or 0)  # Fully diluted valuation
+                
+                # Price changes
+                price_change_5m = best_pair.get('priceChange', {}).get('m5')
+                price_change_1h = best_pair.get('priceChange', {}).get('h1')
+                price_change_24h = best_pair.get('priceChange', {}).get('h24')
+                
+                # Buy/sell counts (may not be available)
+                txns = best_pair.get('txns', {})
+                buy_count_24h = txns.get('h24', {}).get('buys')
+                sell_count_24h = txns.get('h24', {}).get('sells')
+                
+                result_data = {
+                    'price_usd': price_usd,
+                    'liquidity_usd': liquidity,
+                    'main_pool_liquidity': liquidity,
+                    'total_liquidity': liquidity,
+                    'main_pool_dex': best_pair.get('dexId', 'DexScreener'),
+                    'volume_24h': volume_24h,
+                    'market_cap': market_cap,
+                    'fdv': market_cap,
+                    'price_change_5m': price_change_5m,
+                    'price_change_1h': price_change_1h,
+                    'price_change_24h': price_change_24h,
+                    'buy_count_24h': buy_count_24h,
+                    'sell_count_24h': sell_count_24h,
+                    'holder_count': None,  # Not available from DexScreener
+                    'unique_wallets_24h': None,
+                    'total_supply': None,
+                    'circulating_supply': None,
+                    'token_symbol': best_pair.get('baseToken', {}).get('symbol'),
+                    'token_name': best_pair.get('baseToken', {}).get('name'),
+                    'logo_uri': best_pair.get('info', {}).get('imageUrl'),
+                    'raw_data': best_pair,
+                    'data_source': 'DexScreener'  # Mark as fallback source
+                }
+                
+                # Cache the result
+                self._api_cache.set(cache_key, result_data)
+                api_logger.info("DexScreener fallback successful", 
+                              token=address[:8], blockchain=blockchain)
+                return result_data
+                
+        except Exception as e:
+            api_logger.error("DexScreener fallback failed",
+                           token=address[:8], error=str(e), error_type=type(e).__name__)
+            return None
+
+
+    def check_api_health(self) -> Dict[str, Any]:
+        """Check health of all configured APIs.
+        
+        Returns:
+            Dict with health status for each API
+        """
+        health = {
+            'birdeye': {'healthy': False, 'latency_ms': None, 'error': None},
+            'goplus': {'healthy': False, 'latency_ms': None, 'error': None},
+            'dexscreener': {'healthy': False, 'latency_ms': None, 'error': None}
+        }
+        
+        # Test Birdeye with a known token (BONK on Solana)
+        if BIRDEYE_API_KEY:
+            start = time.time()
+            try:
+                test_address = "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263"
+                result = self.fetch_birdeye_data(test_address, blockchain='solana')
+                health['birdeye']['healthy'] = result is not None
+                health['birdeye']['latency_ms'] = round((time.time() - start) * 1000, 2)
+            except Exception as e:
+                health['birdeye']['error'] = str(e)
+        else:
+            health['birdeye']['error'] = 'BIRDEYE_API_KEY not configured'
+        
+        # Test GoPlus with a known token
+        start = time.time()
+        try:
+            test_address = "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263"
+            result = self.fetch_security_data(test_address, blockchain='solana')
+            health['goplus']['healthy'] = result is not None
+            health['goplus']['latency_ms'] = round((time.time() - start) * 1000, 2)
+        except Exception as e:
+            health['goplus']['error'] = str(e)
+        
+        # Test DexScreener
+        start = time.time()
+        try:
+            test_address = "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263"
+            result = self._fetch_dexscreener_fallback(test_address, blockchain='solana')
+            health['dexscreener']['healthy'] = result is not None
+            health['dexscreener']['latency_ms'] = round((time.time() - start) * 1000, 2)
+        except Exception as e:
+            health['dexscreener']['error'] = str(e)
+        
+        return health

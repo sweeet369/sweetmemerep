@@ -592,8 +592,15 @@ class MemecoinAnalyzer:
                             print(f"    💰 Live MCap: {format_currency(live_mcap)}")
                         if live_liq:
                             print(f"    💧 Live Liquidity: {format_currency(live_liq)}")
-                        # Save live data to performance_history for analytics
+                        # Save live data to both performance tables
                         try:
+                            # Update summary table (performance_tracking)
+                            self.db.insert_or_update_performance(token['call_id'], {
+                                'current_mcap': live_mcap,
+                                'current_liquidity': live_liq,
+                                'token_still_alive': 'yes' if live_price else 'unknown',
+                            })
+                            # Insert time-series snapshot (performance_history)
                             self.db.insert_performance_history(token['call_id'], {
                                 'decision_status': 'WATCH',
                                 'reference_price': entry_price,
@@ -609,7 +616,7 @@ class MemecoinAnalyzer:
                                 'rug_pull_occurred': None
                             })
                         except Exception as e:
-                            logger.debug("Could not save live data to history", error=str(e))
+                            logger.debug("Could not save live data", error=str(e))
                     else:
                         print(f"    ⚠️  Could not fetch live data")
                     print(f"    💡 Run: python3 performance_tracker.py for historical tracking")
