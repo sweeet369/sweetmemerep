@@ -214,6 +214,7 @@ def log_api_call(
         duration_ms = round((time.time() - start_time) * 1000, 2)
         ctx['duration_ms'] = duration_ms
 
+        safe_context = {k: v for k, v in context.items() if k != 'duration_ms'}
         if ctx['success']:
             logger.info(
                 f'API request completed',
@@ -221,7 +222,7 @@ def log_api_call(
                 method=method,
                 duration_ms=duration_ms,
                 **{k: v for k, v in ctx.items() if k not in ('success', 'duration_ms')},
-                **context
+                **safe_context
             )
         else:
             logger.error(
@@ -230,7 +231,7 @@ def log_api_call(
                 method=method,
                 duration_ms=duration_ms,
                 **{k: v for k, v in ctx.items() if k not in ('duration_ms',)},
-                **context
+                **safe_context
             )
 
 
