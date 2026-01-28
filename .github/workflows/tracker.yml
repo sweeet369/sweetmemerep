@@ -1,8 +1,6 @@
 name: Performance Tracker
 
 on:
-  schedule:
-    - cron: '*/5 * * * *'  # Run every 5 minutes
   workflow_dispatch:  # Allow manual trigger
   repository_dispatch:  # Allow external trigger via API
     types: [run-tracker]

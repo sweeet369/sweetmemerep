@@ -142,7 +142,26 @@ class PerformanceTracker:
         current_mcap = current_data['market_cap']
 
         if not current_price:
-            print(f"  ⚠️  Could not get current price")
+            print(f"  ⚠️  Could not get current price, recording failure")
+            tracker_logger.warning("Birdeye missing price for token",
+                call_id=call_id, contract_address=contract_address[:16])
+            self.db.insert_or_update_performance(call_id, {
+                'token_still_alive': 'unknown',
+            })
+            self.db.insert_performance_history(call_id, {
+                'decision_status': decision_status,
+                'reference_price': entry_price,
+                'price_usd': None,
+                'liquidity_usd': current_liquidity,
+                'total_liquidity': total_liquidity,
+                'market_cap': current_mcap,
+                'gain_loss_pct': None,
+                'price_change_pct': None,
+                'liquidity_change_pct': None,
+                'market_cap_change_pct': None,
+                'token_still_alive': 'unknown',
+                'rug_pull_occurred': None
+            })
             return
 
         # Calculate gain/loss
