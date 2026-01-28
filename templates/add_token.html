@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+
+{% block title %}Add Token - Memecoin Trading Analyzer{% endblock %}
+
+{% block content %}
+<div class="page-container">
+    <div class="page-header">
+        <h1>➕ Add New Token</h1>
+        <p>Analyze a new memecoin and add it to your watchlist</p>
+    </div>
+
+    <div class="form-container">
+        <form method="POST" action="{{ url_for('add_token') }}" class="token-form">
+            <div class="form-group">
+                <label for="contract_address">Contract Address *</label>
+                <input 
+                    type="text" 
+                    id="contract_address" 
+                    name="contract_address" 
+                    required
+                    placeholder="Enter token contract address (e.g., DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263)"
+                    class="form-input"
+                >
+                <span class="form-hint">Paste the full contract address from the token's page</span>
+            </div>
+
+            <div class="form-group">
+                <label for="blockchain">Blockchain *</label>
+                <select id="blockchain" name="blockchain" class="form-select" required>
+                    {% for chain_id, chain_name in blockchains %}
+                    <option value="{{ chain_id }}" {% if chain_id == 'solana' %}selected{% endif %}>
+                        {{ chain_name }}
+                    </option>
+                    {% endfor %}
+                </select>
+                <span class="form-hint">Select the blockchain where this token is deployed</span>
+            </div>
+
+            <div class="form-group">
+                <label for="source">Source *</label>
+                <input 
+                    type="text" 
+                    id="source" 
+                    name="source" 
+                    required
+                    placeholder="e.g., Alpha Group #3, Twitter Alpha, Discord Degen"
+                    class="form-input"
+                >
+                <span class="form-hint">Where did you hear about this token? (helps track source performance)</span>
+            </div>
+
+            <div class="form-actions">
+                <button type="submit" class="btn btn-primary btn-large">
+                    🔍 Analyze Token
+                </button>
+                <a href="{{ url_for('dashboard') }}" class="btn btn-secondary">
+                    Cancel
+                </a>
+            </div>
+        </form>
+    </div>
+
+    <div class="tips-section">
+        <h3>💡 Tips for Best Results</h3>
+        <ul class="tips-list">
+            <li>Always double-check the contract address before submitting</li>
+            <li>Newer tokens (< 1 hour old) may have limited data available</li>
+            <li>Tokens with very low liquidity (< $20K) are high risk</li>
+            <li>Use specific source names to track which groups give best calls</li>
+        </ul>
+    </div>
+
+    <div class="blockchain-info">
+        <h3>🔗 Supported Blockchains</h3>
+        <div class="blockchain-grid">
+            {% for chain_id, chain_name in blockchains %}
+            <div class="blockchain-item">
+                <span class="blockchain-icon">⛓️</span>
+                <span class="blockchain-name">{{ chain_name }}</span>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+</div>
+{% endblock %}

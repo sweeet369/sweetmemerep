@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+
+{% block title %}Sources - Memecoin Trading Analyzer{% endblock %}
+
+{% block content %}
+<div class="page-container">
+    <div class="page-header">
+        <h1>📈 Source Performance</h1>
+        <p>Track which sources provide the best trading calls</p>
+    </div>
+
+    {% if sources %}
+    <div class="sources-container">
+        <table class="sources-table full-width">
+            <thead>
+                <tr>
+                    <th>Tier</th>
+                    <th>Source</th>
+                    <th>Total Calls</th>
+                    <th>Traded</th>
+                    <th>Win Rate</th>
+                    <th>Avg Max Gain</th>
+                    <th>Rug Rate</th>
+                    <th>Sample Size</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for source in sources %}
+                <tr class="tier-{{ source.tier|lower }}">
+                    <td>
+                        <span class="tier tier-{{ source.tier }}">{{ source.tier }}</span>
+                    </td>
+                    <td class="source-name">{{ source.source_name }}</td>
+                    <td>{{ source.total_calls }}</td>
+                    <td>{{ source.calls_traded }}</td>
+                    <td class="{% if source.win_rate > 50 %}positive{% elif source.win_rate < 30 %}negative{% endif %}">
+                        {{ "%.1f"|format(source.win_rate or 0) }}%
+                    </td>
+                    <td class="{% if source.avg_max_gain > 0 %}positive{% else %}negative{% endif %}">
+                        {{ "%.1f"|format(source.avg_max_gain or 0) }}%
+                    </td>
+                    <td class="{% if source.rug_rate > 10 %}negative{% endif %}">
+                        {{ "%.1f"|format(source.rug_rate or 0) }}%
+                    </td>
+                    <td>{{ source.sample_size or source.total_calls }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    <div class="legend-section">
+        <h3>📊 Tier Legend</h3>
+        <div class="legend-grid">
+            <div class="legend-item">
+                <span class="tier tier-S">S</span>
+                <span>Elite - 70%+ win rate, low rug rate</span>
+            </div>
+            <div class="legend-item">
+                <span class="tier tier-A">A</span>
+                <span>Excellent - 55%+ win rate</span>
+            </div>
+            <div class="legend-item">
+                <span class="tier tier-B">B</span>
+                <span>Good - 40%+ win rate</span>
+            </div>
+            <div class="legend-item">
+                <span class="tier tier-C">C</span>
+                <span>Average - Below 40% win rate</span>
+            </div>
+        </div>
+    </div>
+    {% else %}
+    <div class="empty-state">
+        <div class="empty-icon">📊</div>
+        <h3>No sources yet</h3>
+        <p>Start adding tokens to build source statistics</p>
+        <a href="{{ url_for('add_token') }}" class="btn btn-primary">Add Your First Token</a>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

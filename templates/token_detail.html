@@ -1,0 +1,203 @@
+{% extends "base.html" %}
+
+{% block title %}{{ token.token_symbol }} - Token Details{% endblock %}
+
+{% block content %}
+<div class="token-detail">
+    <div class="detail-header">
+        <div class="header-main">
+            <h1>{{ token.token_symbol or 'UNKNOWN' }}</h1>
+            <p class="token-full-name">{{ token.token_name or 'Unknown Token' }}</p>
+            <div class="header-badges">
+                <span class="chain-badge large">{{ token.blockchain }}</span>
+                <span class="badge badge-{{ token.decision|lower }}">{{ token.decision }}</span>
+                {% if safety_rating %}
+                <span class="safety-badge safety-{{ safety_rating|lower }}">
+                    {{ safety_rating }} ({{ "%.1f"|format(token.safety_score or 0) }}/10)
+                </span>
+                {% endif %}
+            </div>
+        </div>
+        <div class="header-actions">
+            <button onclick="refreshToken({{ token.call_id }})" class="btn btn-secondary" id="refresh-btn">
+                🔄 Refresh Data
+            </button>
+            <a href="{{ url_for('dashboard') }}" class="btn btn-link">← Back to Dashboard</a>
+        </div>
+    </div>
+
+    <div class="detail-grid">
+        <div class="detail-section">
+            <h3>📊 Market Data</h3>
+            <div class="data-grid">
+                <div class="data-item">
+                    <span class="data-label">Price</span>
+                    <span class="data-value">${{ "%.10f"|format(token.price_usd or 0) }}</span>
+                </div>
+                <div class="data-item">
+                    <span class="data-label">Market Cap</span>
+                    <span class="data-value">{{ token.market_cap | format_currency }}</span>
+                </div>
+                <div class="data-item">
+                    <span class="data-label">Liquidity</span>
+                    <span class="data-value">{{ token.liquidity_usd | format_currency }}</span>
+                </div>
+                <div class="data-item">
+                    <span class="data-label">24h Volume</span>
+                    <span class="data-value">{{ token.volume_24h | format_currency }}</span>
+                </div>
+                {% if performance %}
+                <div class="data-item">
+                    <span class="data-label">Current Market Cap</span>
+                    <span class="data-value">{{ performance.current_mcap | format_currency }}</span>
+                </div>
+                <div class="data-item">
+                    <span class="data-label">Max Gain Observed</span>
+                    <span class="data-value {% if performance.max_gain_observed and performance.max_gain_observed > 0 %}positive{% else %}negative{% endif %}">
+                        {{ "%.1f"|format(performance.max_gain_observed or 0) }}%
+                    </span>
+                </div>
+                {% endif %}
+            </div>
+        </div>
+
+        <div class="detail-section">
+            <h3>🔒 Security Analysis</h3>
+            <div class="security-grid">
+                <div class="security-item {% if token.mint_authority_revoked %}secure{% else %}risk{% endif %}">
+                    <span class="security-icon">{{ '✅' if token.mint_authority_revoked else '❌' }}</span>
+                    <span class="security-label">Mint Authority</span>
+                    <span class="security-status">{{ 'Revoked' if token.mint_authority_revoked else 'Active' }}</span>
+                </div>
+                <div class="security-item {% if token.freeze_authority_revoked %}secure{% else %}risk{% endif %}">
+                    <span class="security-icon">{{ '✅' if token.freeze_authority_revoked else '❌' }}</span>
+                    <span class="security-label">Freeze Authority</span>
+                    <span class="security-status">{{ 'Revoked' if token.freeze_authority_revoked else 'Active' }}</span>
+                </div>
+                <div class="security-item">
+                    <span class="security-icon">👥</span>
+                    <span class="security-label">Top Holder</span>
+                    <span class="security-status">{{ "%.1f"|format(token.top_holder_percent or 0) }}%</span>
+                </div>
+                <div class="security-item">
+                    <span class="security-icon">🛡️</span>
+                    <span class="security-label">Safety Score</span>
+                    <span class="security-status">{{ "%.1f"|format(token.safety_score or 0) }}/10</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="detail-section">
+        <h3>📝 Update Decision</h3>
+        <form method="POST" action="{{ url_for('update_decision', call_id=token.call_id) }}" class="decision-form">
+            <div class="decision-buttons">
+                <button type="submit" name="decision" value="WATCH" 
+                    class="decision-btn {% if token.decision == 'WATCH' %}active{% endif %}">
+                    👀 WATCH
+                </button>
+                <button type="submit" name="decision" value="TRADE"
+                    class="decision-btn {% if token.decision == 'TRADE' %}active{% endif %}">
+                    💰 TRADE
+                </button>
+                <button type="submit" name="decision" value="PASS"
+                    class="decision-btn {% if token.decision == 'PASS' %}active{% endif %}">
+                    🚫 PASS
+                </button>
+            </div>
+            <div class="form-group">
+                <label for="notes">Notes</label>
+                <textarea id="notes" name="notes" rows="3" class="form-input"
+                    placeholder="Add your reasoning or observations...">{{ token.reasoning_notes or '' }}</textarea>
+            </div>
+        </form>
+    </div>
+
+    <div class="detail-section">
+        <h3>📋 Token Information</h3>
+        <div class="info-grid">
+            <div class="info-item">
+                <span class="info-label">Contract Address</span>
+                <span class="info-value address">{{ token.contract_address }}</span>
+            </div>
+            <div class="info-item">
+                <span class="info-label">Source</span>
+                <span class="info-value">{{ token.source }}</span>
+            </div>
+            <div class="info-item">
+                <span class="info-label">Added On</span>
+                <span class="info-value">{{ token.timestamp_received }}</span>
+            </div>
+            <div class="info-item">
+                <span class="info-label">Emotional State</span>
+                <span class="info-value">{{ token.emotional_state or 'Not recorded' }}</span>
+            </div>
+        </div>
+    </div>
+
+    {% if history %}
+    <div class="detail-section">
+        <h3>📈 Performance History</h3>
+        <div class="history-table-container">
+            <table class="history-table">
+                <thead>
+                    <tr>
+                        <th>Time</th>
+                        <th>Price</th>
+                        <th>Market Cap</th>
+                        <th>Gain/Loss</th>
+                        <th>Status</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for entry in history %}
+                    <tr>
+                        <td>{{ entry.timestamp }}</td>
+                        <td>${{ "%.10f"|format(entry.price_usd or 0) }}</td>
+                        <td>{{ entry.market_cap | format_currency }}</td>
+                        <td class="{% if entry.gain_loss_pct > 0 %}positive{% elif entry.gain_loss_pct < 0 %}negative{% endif %}">
+                            {{ "%.1f"|format(entry.gain_loss_pct or 0) }}%
+                        </td>
+                        <td>
+                            {% if entry.rug_pull_occurred == 'yes' %}
+                            <span class="status-rug">RUG</span>
+                            {% elif entry.token_still_alive == 'yes' %}
+                            <span class="status-alive">Alive</span>
+                            {% else %}
+                            <span class="status-unknown">Unknown</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    {% endif %}
+</div>
+
+<script>
+function refreshToken(callId) {
+    const btn = document.getElementById('refresh-btn');
+    btn.disabled = true;
+    btn.textContent = '⏳ Refreshing...';
+    
+    fetch(`/api/refresh_token/${callId}`, { method: 'POST' })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                location.reload();
+            } else {
+                alert('Failed to refresh: ' + data.error);
+                btn.disabled = false;
+                btn.textContent = '🔄 Refresh Data';
+            }
+        })
+        .catch(error => {
+            alert('Error: ' + error);
+            btn.disabled = false;
+            btn.textContent = '🔄 Refresh Data';
+        });
+}
+</script>
+{% endblock %}

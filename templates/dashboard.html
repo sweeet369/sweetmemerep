@@ -1,0 +1,129 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="dashboard">
+    <div class="stats-grid">
+        <div class="stat-card">
+            <div class="stat-icon">📊</div>
+            <div class="stat-value">{{ total_calls }}</div>
+            <div class="stat-label">Total Tracked</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-icon">👀</div>
+            <div class="stat-value">{{ watching }}</div>
+            <div class="stat-label">Watching</div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-icon">💰</div>
+            <div class="stat-value">{{ active_trades }}</div>
+            <div class="stat-label">Active Trades</div>
+        </div>
+    </div>
+
+    <div class="section-header">
+        <h2>👀 Watchlist</h2>
+        <a href="{{ url_for('add_token') }}" class="btn btn-primary">+ Add Token</a>
+    </div>
+
+    {% if watchlist %}
+        <div class="token-grid">
+            {% for token in watchlist %}
+            <div class="token-card {% if token.rug_pull_occurred == 'yes' %}rugged{% endif %}">
+                <div class="token-header">
+                    <div class="token-symbol">{{ token.token_symbol or 'UNKNOWN' }}</div>
+                    <div class="token-name">{{ token.token_name or 'Unknown Token' }}</div>
+                    <span class="badge badge-{{ token.decision|lower }}">{{ token.decision }}</span>
+                </div>
+
+                <div class="token-blockchain">
+                    <span class="chain-badge">{{ token.blockchain }}</span>
+                    <span class="time-ago">{{ token.time_ago }}</span>
+                </div>
+
+                <div class="token-metrics">
+                    <div class="metric">
+                        <span class="metric-label">Safety Score</span>
+                        <span class="metric-value safety-{{ (token.safety_score or 5)|int }}">
+                            {{ "%.1f"|format(token.safety_score or 0) }}/10
+                        </span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">Market Cap</span>
+                        <span class="metric-value">{{ token.current_mcap or token.market_cap | format_currency }}</span>
+                    </div>
+                    {% if token.max_gain_observed %}
+                    <div class="metric">
+                        <span class="metric-label">Max Gain</span>
+                        <span class="metric-value {% if token.max_gain_observed > 0 %}positive{% else %}negative{% endif %}">
+                            {{ "%.1f"|format(token.max_gain_observed) }}%
+                        </span>
+                    </div>
+                    {% endif %}
+                    {% if token.mcap_change_pct %}
+                    <div class="metric">
+                        <span class="metric-label">Change</span>
+                        <span class="metric-value {% if token.mcap_change_pct > 0 %}positive{% else %}negative{% endif %}">
+                            {{ "%.1f"|format(token.mcap_change_pct) }}%
+                        </span>
+                    </div>
+                    {% endif %}
+                </div>
+
+                <div class="token-source">
+                    📍 {{ token.source }}
+                </div>
+
+                {% if token.rug_pull_occurred == 'yes' %}
+                <div class="rug-badge">🚨 RUG PULL DETECTED</div>
+                {% endif %}
+
+                <a href="{{ url_for('token_detail', call_id=token.call_id) }}" class="btn btn-secondary btn-block">
+                    View Details →
+                </a>
+            </div>
+            {% endfor %}
+        </div>
+    {% else %}
+        <div class="empty-state">
+            <div class="empty-icon">📭</div>
+            <h3>No tokens on watchlist</h3>
+            <p>Start by adding your first token to analyze</p>
+            <a href="{{ url_for('add_token') }}" class="btn btn-primary">Add Your First Token</a>
+        </div>
+    {% endif %}
+
+    {% if sources %}
+    <div class="section-header">
+        <h2>📈 Top Performing Sources</h2>
+        <a href="{{ url_for('sources') }}" class="btn btn-link">View All →</a>
+    </div>
+
+    <div class="sources-table-container">
+        <table class="sources-table">
+            <thead>
+                <tr>
+                    <th>Tier</th>
+                    <th>Source</th>
+                    <th>Calls</th>
+                    <th>Win Rate</th>
+                    <th>Avg Gain</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for source in sources[:5] %}
+                <tr>
+                    <td><span class="tier tier-{{ source.tier }}">{{ source.tier }}</span></td>
+                    <td>{{ source.source_name }}</td>
+                    <td>{{ source.total_calls }}</td>
+                    <td>{{ "%.1f"|format(source.win_rate or 0) }}%</td>
+                    <td class="{% if source.avg_max_gain > 0 %}positive{% else %}negative{% endif %}">
+                        {{ "%.1f"|format(source.avg_max_gain or 0) }}%
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

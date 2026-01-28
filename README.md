@@ -472,6 +472,43 @@ API responses are cached for 60 seconds to reduce redundant calls:
 - Token age estimation may be inaccurate for some chains
 - Some advanced security features require higher-tier API access
 
+## Web Interface 🌐
+
+A beautiful web interface is now available! No more terminal commands needed.
+
+### Starting the Web App
+
+```bash
+python3 web_app.py
+```
+
+Then open your browser and go to: **http://localhost:5001**
+
+### Features
+
+- **📊 Dashboard** - View your watchlist with pretty cards and stats
+- **➕ Add Token** - Simple form to analyze new tokens
+- **🔍 Token Details** - Full analysis with market data and security checks
+- **📈 Sources** - Track which sources give the best calls
+- **📱 Mobile Friendly** - Works on your phone
+
+### Screenshots
+
+**Dashboard:**
+- Stats cards showing total tracked, watching, and active trades
+- Watchlist with token cards showing safety scores and market cap
+- Top performing sources table
+
+**Add Token:**
+- Simple form with contract address, blockchain selector, and source
+- Supports all 6 blockchains (Solana, Base, Ethereum, BSC, Polygon, Arbitrum)
+
+**Token Detail:**
+- Market data (price, market cap, liquidity, volume)
+- Security analysis (mint/freeze authority, top holder %)
+- Update decision buttons (WATCH/TRADE/PASS)
+- Performance history table
+
 ## Testing
 
 Run the test suite:
