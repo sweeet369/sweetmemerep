@@ -220,7 +220,7 @@ def log_api_call(
                 endpoint=endpoint,
                 method=method,
                 duration_ms=duration_ms,
-                **{k: v for k, v in ctx.items() if k not in ('success',)},
+                **{k: v for k, v in ctx.items() if k not in ('success', 'duration_ms')},
                 **context
             )
         else:
@@ -229,7 +229,7 @@ def log_api_call(
                 endpoint=endpoint,
                 method=method,
                 duration_ms=duration_ms,
-                **ctx,
+                **{k: v for k, v in ctx.items() if k not in ('duration_ms',)},
                 **context
             )
 

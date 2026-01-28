@@ -116,7 +116,24 @@ class PerformanceTracker:
             })
             return
         if current_data['exists'] is None:
-            print(f"  ⚠️  Market data unavailable, skipping update")
+            print(f"  ⚠️  Market data unavailable, recording failure")
+            tracker_logger.warning("Birdeye API failed for token",
+                call_id=call_id, contract_address=contract_address[:16])
+            # Record the failure in history so we know tracking was attempted
+            self.db.insert_performance_history(call_id, {
+                'decision_status': decision_status,
+                'reference_price': entry_price,
+                'price_usd': None,
+                'liquidity_usd': None,
+                'total_liquidity': None,
+                'market_cap': None,
+                'gain_loss_pct': None,
+                'price_change_pct': None,
+                'liquidity_change_pct': None,
+                'market_cap_change_pct': None,
+                'token_still_alive': 'unknown',
+                'rug_pull_occurred': None
+            })
             return
 
         current_price = current_data['price']
@@ -347,11 +364,12 @@ class PerformanceTracker:
         print("\n📊 TRACKING SUMMARY")
         print("─"*60)
 
+        # Use comparison that works for both SQLite (text 'yes') and Postgres (boolean TRUE)
         self.db.cursor.execute('''
             SELECT
                 COUNT(*) as total,
-                SUM(CASE WHEN p.token_still_alive = 'yes' THEN 1 ELSE 0 END) as alive,
-                SUM(CASE WHEN p.rug_pull_occurred = 'yes' THEN 1 ELSE 0 END) as rugs,
+                SUM(CASE WHEN p.token_still_alive = 'yes' OR p.token_still_alive IS TRUE THEN 1 ELSE 0 END) as alive,
+                SUM(CASE WHEN p.rug_pull_occurred = 'yes' OR p.rug_pull_occurred IS TRUE THEN 1 ELSE 0 END) as rugs,
                 AVG(p.max_gain_observed) as avg_gain,
                 MAX(p.max_gain_observed) as best_gain,
                 MIN(p.max_loss_observed) as worst_loss
@@ -380,6 +398,14 @@ class PerformanceTracker:
 def main():
     """Main entry point."""
     import argparse
+    import os
+
+    # Fail fast if BIRDEYE_API_KEY is missing
+    if not os.environ.get('BIRDEYE_API_KEY'):
+        print("❌ FATAL: BIRDEYE_API_KEY environment variable is not set!")
+        print("💡 Set it in your environment or .env file")
+        print("💡 For GitHub Actions, add it as a repository secret")
+        raise SystemExit(1)
 
     parser = argparse.ArgumentParser(description='Track memecoin performance over time')
     parser.add_argument('-l', '--limit', type=int, help='Limit number of tokens to update')

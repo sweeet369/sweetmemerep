@@ -377,6 +377,7 @@ class MemecoinAnalyzer:
                     c.token_name,
                     c.contract_address,
                     c.source,
+                    c.blockchain,
                     s.price_usd as entry_price,
                     s.snapshot_timestamp,
                     s.safety_score,
@@ -423,6 +424,7 @@ class MemecoinAnalyzer:
                     c.token_name,
                     c.contract_address,
                     c.source,
+                    c.blockchain,
                     s.price_usd as entry_price,
                     s.snapshot_timestamp,
                     s.safety_score,
@@ -574,8 +576,43 @@ class MemecoinAnalyzer:
                     print(f"    🔄 Last updated: {update_mins_ago}m ago")
             else:
                 if not (current_price or current_liquidity or current_mcap):
-                    print(f"    ⏳ Waiting for performance data...")
-                    print(f"    💡 Run: python3 performance_tracker.py")
+                    # Live-fetch fallback when no performance data exists
+                    print(f"    🔄 Fetching live data...")
+                    live_data = self.fetcher.fetch_birdeye_data(token['contract_address'], blockchain=token.get('blockchain', 'solana'))
+                    if live_data:
+                        live_price = live_data.get('price_usd')
+                        live_liq = live_data.get('liquidity_usd')
+                        live_mcap = live_data.get('market_cap')
+                        entry_price = token.get('entry_price') or 0
+                        gain_loss = ((live_price - entry_price) / entry_price * 100) if live_price and entry_price else None
+                        if live_price and entry_price:
+                            price_indicator = "📈" if gain_loss > 0 else "📉" if gain_loss < 0 else "➡️"
+                            print(f"    {price_indicator} Live Price: ${live_price:.10f} ({gain_loss:+.1f}%)")
+                        if live_mcap:
+                            print(f"    💰 Live MCap: {format_currency(live_mcap)}")
+                        if live_liq:
+                            print(f"    💧 Live Liquidity: {format_currency(live_liq)}")
+                        # Save live data to performance_history for analytics
+                        try:
+                            self.db.insert_performance_history(token['call_id'], {
+                                'decision_status': 'WATCH',
+                                'reference_price': entry_price,
+                                'price_usd': live_price,
+                                'liquidity_usd': live_liq,
+                                'total_liquidity': live_liq,
+                                'market_cap': live_mcap,
+                                'gain_loss_pct': gain_loss,
+                                'price_change_pct': None,
+                                'liquidity_change_pct': None,
+                                'market_cap_change_pct': None,
+                                'token_still_alive': 'yes' if live_price else 'unknown',
+                                'rug_pull_occurred': None
+                            })
+                        except Exception as e:
+                            logger.debug("Could not save live data to history", error=str(e))
+                    else:
+                        print(f"    ⚠️  Could not fetch live data")
+                    print(f"    💡 Run: python3 performance_tracker.py for historical tracking")
                 last_ts = token.get('current_timestamp') or token.get('last_updated')
                 if last_ts:
                     lu = last_ts
@@ -768,13 +805,23 @@ class MemecoinAnalyzer:
                 c.contract_address,
                 c.blockchain,
                 d.timestamp_decision,
-                p.current_price,
+                ph.price_usd as current_price,
                 p.max_gain_observed,
                 s.price_usd as call_price
             FROM calls_received c
             JOIN my_decisions d ON c.call_id = d.call_id
             LEFT JOIN performance_tracking p ON c.call_id = p.call_id
             LEFT JOIN initial_snapshot s ON c.call_id = s.call_id
+            LEFT JOIN (
+                SELECT ph1.call_id, ph1.price_usd
+                FROM performance_history ph1
+                JOIN (
+                    SELECT call_id, MAX(timestamp) as max_ts
+                    FROM performance_history
+                    GROUP BY call_id
+                ) ph2
+                ON ph1.call_id = ph2.call_id AND ph1.timestamp = ph2.max_ts
+            ) ph ON ph.call_id = c.call_id
             WHERE d.my_decision = 'WATCH'
             ORDER BY d.timestamp_decision DESC
         ''')
