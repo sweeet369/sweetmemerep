@@ -119,12 +119,29 @@ def add_token():
                 call_id=call_id,
                 decision='WATCH',
                 trade_size_usd=None,
-                entry_price=data.get('price_usd'),
+                entry_price=None,
                 reasoning_notes=f"Added via web interface. Source: {source}",
                 emotional_state='neutral',
                 confidence_level=5,
                 chart_assessment='Initial analysis'
             )
+
+            # Create initial time-series point at call time.
+            call_price = data.get('price_usd')
+            db.insert_performance_history(call_id, {
+                'decision_status': 'WATCH',
+                'reference_price': call_price,
+                'price_usd': call_price,
+                'liquidity_usd': data.get('liquidity_usd'),
+                'total_liquidity': data.get('total_liquidity') or data.get('liquidity_usd'),
+                'market_cap': data.get('market_cap'),
+                'gain_loss_pct': 0.0 if call_price else None,
+                'price_change_pct': None,
+                'liquidity_change_pct': None,
+                'market_cap_change_pct': None,
+                'token_still_alive': 'yes',
+                'rug_pull_occurred': None
+            })
             
             flash(f"✅ Token added successfully! {data.get('token_symbol')} is now on your watchlist.", 'success')
             return redirect(url_for('token_detail', call_id=call_id))
@@ -152,14 +169,70 @@ def update_decision(call_id):
         if not token:
             flash('Token not found', 'error')
             return redirect(url_for('dashboard'))
-        
-        # Update decision (use DB-aware placeholder handling)
-        db._execute('''
-            UPDATE my_decisions 
-            SET my_decision = ?, reasoning_notes = ?
-            WHERE call_id = ?
-        ''', (decision, notes, call_id))
+
+        current_decision = token.get('decision')
+        call_price = token.get('price_usd')
+        trade_entry_price = token.get('trade_entry_price')
+        checkpoint_price = None
+        checkpoint_liquidity = None
+        checkpoint_total_liquidity = None
+        checkpoint_mcap = None
+
+        # Capture fresh market data for transition checkpoints.
+        try:
+            live = fetcher.fetch_birdeye_data(
+                token['contract_address'],
+                blockchain=(token.get('blockchain') or 'solana').lower()
+            )
+            if live:
+                checkpoint_price = live.get('price_usd')
+                checkpoint_liquidity = live.get('liquidity_usd')
+                checkpoint_total_liquidity = live.get('total_liquidity') or live.get('liquidity_usd')
+                checkpoint_mcap = live.get('market_cap')
+        except Exception:
+            pass
+
+        if decision == 'TRADE' and current_decision != 'TRADE':
+            # Use current market price for trade entry, not call price.
+            new_entry_price = checkpoint_price or trade_entry_price or call_price
+            entry_timestamp = datetime.now().isoformat()
+            db._execute('''
+                UPDATE my_decisions
+                SET my_decision = ?, reasoning_notes = ?, entry_price = ?, entry_timestamp = ?
+                WHERE call_id = ?
+            ''', (decision, notes, new_entry_price, entry_timestamp, call_id))
+            trade_entry_price = new_entry_price
+        else:
+            db._execute('''
+                UPDATE my_decisions 
+                SET my_decision = ?, reasoning_notes = ?
+                WHERE call_id = ?
+            ''', (decision, notes, call_id))
+
         db.conn.commit()
+
+        # Record a decision-transition checkpoint so history is continuous
+        # up to the moment of PASS or TRADE conversion.
+        if decision != current_decision:
+            reference_price = trade_entry_price if decision == 'TRADE' else call_price
+            gain_loss = None
+            if checkpoint_price and reference_price:
+                gain_loss = ((checkpoint_price - reference_price) / reference_price) * 100
+
+            db.insert_performance_history(call_id, {
+                'decision_status': decision,
+                'reference_price': reference_price,
+                'price_usd': checkpoint_price,
+                'liquidity_usd': checkpoint_liquidity,
+                'total_liquidity': checkpoint_total_liquidity,
+                'market_cap': checkpoint_mcap,
+                'gain_loss_pct': gain_loss,
+                'price_change_pct': None,
+                'liquidity_change_pct': None,
+                'market_cap_change_pct': None,
+                'token_still_alive': 'yes' if checkpoint_price else 'unknown',
+                'rug_pull_occurred': None
+            })
         
         flash(f'Decision updated to {decision}', 'success')
         
@@ -217,6 +290,7 @@ def get_watchlist_tokens():
             c.blockchain,
             s.snapshot_timestamp,
             s.price_usd as call_price,
+            d.entry_price as trade_entry_price,
             s.liquidity_usd,
             s.market_cap,
             s.safety_score,
@@ -266,6 +340,9 @@ def get_token_by_id(call_id):
             c.*,
             s.*,
             d.my_decision as decision,
+            d.entry_price as trade_entry_price,
+            d.entry_timestamp as trade_entry_timestamp,
+            d.actual_exit_price,
             d.reasoning_notes,
             d.emotional_state,
             d.confidence_level

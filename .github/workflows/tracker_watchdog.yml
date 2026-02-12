@@ -1,0 +1,135 @@
+name: Tracker Freshness Watchdog
+
+on:
+  schedule:
+    - cron: '*/5 * * * *' # Every 5 minutes
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  check-freshness:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check latest tracker run age
+        id: check
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TRACKER_WORKFLOW_FILE: tracker.yml
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import urllib.request
+          from datetime import datetime, timezone
+
+          repo = os.environ["REPO"]
+          token = os.environ["GITHUB_TOKEN"]
+          tracker_workflow_file = os.environ["TRACKER_WORKFLOW_FILE"]
+          threshold_minutes = 10
+          alert_window_minutes = 5
+
+          api_url = (
+              f"https://api.github.com/repos/{repo}/actions/workflows/"
+              f"{tracker_workflow_file}/runs?per_page=1"
+          )
+
+          req = urllib.request.Request(
+              api_url,
+              headers={
+                  "Accept": "application/vnd.github+json",
+                  "Authorization": f"Bearer {token}",
+                  "X-GitHub-Api-Version": "2022-11-28",
+              },
+          )
+          with urllib.request.urlopen(req, timeout=20) as resp:
+              payload = json.loads(resp.read().decode("utf-8"))
+
+          runs = payload.get("workflow_runs", [])
+          should_alert = False
+          message = ""
+          minutes_since_last_run = None
+
+          if not runs:
+              should_alert = True
+              message = (
+                  f"🚨 Tracker stale: no runs found for {repo} workflow "
+                  f"`{tracker_workflow_file}`."
+              )
+          else:
+              latest = runs[0]
+              last_ts = (
+                  latest.get("run_started_at")
+                  or latest.get("created_at")
+                  or latest.get("updated_at")
+              )
+              last_dt = datetime.fromisoformat(last_ts.replace("Z", "+00:00"))
+              now = datetime.now(timezone.utc)
+              minutes_since_last_run = (now - last_dt).total_seconds() / 60.0
+
+              if (
+                  minutes_since_last_run >= threshold_minutes
+                  and minutes_since_last_run < (threshold_minutes + alert_window_minutes)
+              ):
+                  should_alert = True
+                  run_url = latest.get("html_url", "")
+                  run_number = latest.get("run_number", "unknown")
+                  event = latest.get("event", "unknown")
+                  message = (
+                      f"🚨 Tracker stale: last run was {minutes_since_last_run:.1f} minutes ago "
+                      f"(threshold {threshold_minutes}m). "
+                      f"Latest run: #{run_number} via `{event}` {run_url}"
+                  )
+              elif minutes_since_last_run >= threshold_minutes:
+                  message = (
+                      f"Tracker still stale ({minutes_since_last_run:.1f}m since last run), "
+                      f"alert window already passed."
+                  )
+              else:
+                  message = (
+                      f"Tracker fresh: last run {minutes_since_last_run:.1f} minutes ago."
+                  )
+
+          out_path = os.environ["GITHUB_OUTPUT"]
+          with open(out_path, "a", encoding="utf-8") as out:
+              out.write(f"should_alert={'true' if should_alert else 'false'}\n")
+              if minutes_since_last_run is not None:
+                  out.write(f"minutes_since_last_run={minutes_since_last_run:.2f}\n")
+              out.write(f"alert_message={message}\n")
+
+          print(message)
+          PY
+
+      - name: Notify Discord when tracker is stale
+        if: ${{ steps.check.outputs.should_alert == 'true' && secrets.DISCORD_WEBHOOK_URL != '' }}
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          ALERT_MESSAGE: ${{ steps.check.outputs.alert_message }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import urllib.request
+
+          webhook_url = os.environ["DISCORD_WEBHOOK_URL"]
+          message = os.environ["ALERT_MESSAGE"]
+          data = json.dumps({"content": message}).encode("utf-8")
+          req = urllib.request.Request(
+              webhook_url,
+              data=data,
+              headers={"Content-Type": "application/json"},
+              method="POST",
+          )
+          with urllib.request.urlopen(req, timeout=20):
+              pass
+          print("Discord stale-tracker alert sent.")
+          PY
+
+      - name: Warn if stale but webhook is missing
+        if: ${{ steps.check.outputs.should_alert == 'true' && secrets.DISCORD_WEBHOOK_URL == '' }}
+        run: |
+          echo "::warning::Tracker is stale but DISCORD_WEBHOOK_URL secret is missing."

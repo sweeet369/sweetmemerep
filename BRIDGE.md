@@ -75,6 +75,34 @@ Last worked on by: Codex (GPT-5)
   - Root cause: `web_app.py` used raw `db.cursor.execute` with `?` placeholders (invalid for PostgreSQL), causing transaction abort state.
   - Fix: switched to `db._execute(...)` in `/update_decision/<call_id>` and added explicit `db.conn.rollback()` inside exception handler.
   - Validation: route POST now returns redirect successfully without `InFailedSqlTransaction`; PASS decision removes token from active WATCH/open-TRADE set.
+- 2026-02-12 (Codex): Fixed call-vs-entry price semantics and history continuity:
+  - `call_price` and `entry_price` are now separated consistently:
+    - WATCH/PASS baselines use `initial_snapshot.price_usd` (call price).
+    - TRADE baselines use `my_decisions.entry_price` (trade entry price).
+  - `web_app.py`:
+    - New WATCH tokens are created with `entry_price = NULL` (no fake entry on call).
+    - TRADE transition sets `entry_price` at transition-time market price and stores `entry_timestamp`.
+    - Added transition checkpoints to `performance_history` for decision changes (WATCH->TRADE, WATCH->PASS, etc.).
+    - Added rollback safety on route failure and exposed `trade_entry_price`/`trade_entry_timestamp` in token detail query.
+  - `analyzer.py`:
+    - CLI decision flow now keeps call price vs trade entry distinct.
+    - Added immediate initial history checkpoint at call/decision time.
+    - Added final checkpoints on watchlist removal and trade exit.
+    - Replaced remaining direct `cursor.execute(... ? ...)` writes in updated paths with `db._execute(...)` for Postgres safety.
+  - `performance_tracker.py`:
+    - Added explicit baseline resolver: WATCH uses call price; TRADE uses trade entry price.
+    - Tracker history now records the correct baseline per decision type.
+    - Added fallback failure checkpoint recording so each scheduled run still leaves a timeline trace on per-token errors.
+  - `templates/token_detail.html`:
+    - UI label now shows `Call Price` and displays `Trade Entry Price` separately.
+- 2026-02-12 (Codex): Added missing-run alerting watchdog for tracker freshness:
+  - New workflow: `.github/workflows/tracker_watchdog.yml`.
+  - Schedule: every 5 minutes (`*/5 * * * *`) + manual trigger.
+  - Behavior:
+    - Calls GitHub Actions API to read latest run of `tracker.yml`.
+    - If latest run is older than 10 minutes (or no run exists), sends Discord alert via `DISCORD_WEBHOOK_URL`.
+    - If secret is missing, logs a workflow warning instead of failing.
+  - Result: external dispatch silence is now detectable and alertable (not only run failures).
 
 ## Known Issues
 <!-- Active bugs or problems not yet resolved -->

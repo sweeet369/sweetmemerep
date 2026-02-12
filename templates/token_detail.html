@@ -31,7 +31,7 @@
             <h3>📊 Market Data</h3>
             <div class="data-grid">
                 <div class="data-item">
-                    <span class="data-label">Price</span>
+                    <span class="data-label">Call Price</span>
                     <span class="data-value">${{ "%.10f"|format(token.price_usd or 0) }}</span>
                 </div>
                 <div class="data-item">
@@ -127,6 +127,16 @@
             <div class="info-item">
                 <span class="info-label">Added On</span>
                 <span class="info-value">{{ token.timestamp_received }}</span>
+            </div>
+            <div class="info-item">
+                <span class="info-label">Trade Entry Price</span>
+                <span class="info-value">
+                    {% if token.decision == 'TRADE' and token.trade_entry_price %}
+                        ${{ "%.10f"|format(token.trade_entry_price) }}
+                    {% else %}
+                        Not entered
+                    {% endif %}
+                </span>
             </div>
             <div class="info-item">
                 <span class="info-label">Emotional State</span>

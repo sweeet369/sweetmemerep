@@ -97,12 +97,32 @@ class PerformanceTracker:
             return None
         return ((current_price - entry_price) / entry_price) * 100
 
+    def resolve_reference_price(self, token: Dict[str, Any]) -> tuple[Optional[float], str]:
+        """Resolve which baseline price should be used for performance calculations."""
+        decision_status = token.get('my_decision')
+        call_price = token.get('call_price')
+        trade_entry_price = token.get('trade_entry_price')
+
+        if decision_status == 'TRADE':
+            if trade_entry_price:
+                return trade_entry_price, 'trade_entry_price'
+            tracker_logger.warning(
+                "TRADE token missing entry price; using call_price fallback",
+                call_id=token.get('call_id'),
+                token=token.get('token_symbol')
+            )
+            return call_price, 'call_price_fallback'
+
+        # WATCH tokens always use call price baseline.
+        return call_price, 'call_price'
+
     def update_token_performance(self, call_id: int, contract_address: str,
-                                entry_price: float, snapshot_timestamp: str,
+                                reference_price: Optional[float], snapshot_timestamp: str,
                                 decision_status: str, blockchain: str):
         """Update performance data for a single token."""
         hours_since = self.calculate_time_since_snapshot(snapshot_timestamp)
         minutes_since = hours_since * 60
+        baseline_price = reference_price if reference_price and reference_price > 0 else None
 
         # Fetch current price
         print(f"  Checking {contract_address}...")
@@ -116,7 +136,7 @@ class PerformanceTracker:
             })
             self.db.insert_performance_history(call_id, {
                 'decision_status': decision_status,
-                'reference_price': entry_price,
+                'reference_price': baseline_price,
                 'price_usd': None,
                 'liquidity_usd': None,
                 'total_liquidity': None,
@@ -136,7 +156,7 @@ class PerformanceTracker:
             # Record the failure in history so we know tracking was attempted
             self.db.insert_performance_history(call_id, {
                 'decision_status': decision_status,
-                'reference_price': entry_price,
+                'reference_price': baseline_price,
                 'price_usd': None,
                 'liquidity_usd': None,
                 'total_liquidity': None,
@@ -164,7 +184,7 @@ class PerformanceTracker:
             })
             self.db.insert_performance_history(call_id, {
                 'decision_status': decision_status,
-                'reference_price': entry_price,
+                'reference_price': baseline_price,
                 'price_usd': None,
                 'liquidity_usd': current_liquidity,
                 'total_liquidity': total_liquidity,
@@ -179,7 +199,7 @@ class PerformanceTracker:
             return
 
         # Calculate gain/loss
-        gain_loss = self.calculate_gain_loss(entry_price, current_price)
+        gain_loss = self.calculate_gain_loss(baseline_price, current_price)
 
         if gain_loss is not None:
             print(f"  📊 Current: ${current_price:.10f} ({gain_loss:+.2f}%)")
@@ -215,15 +235,15 @@ class PerformanceTracker:
         if total_liquidity is not None and total_liquidity < 1000:
             update_data['rug_pull_occurred'] = 'yes'
             print(f"  🚨 RUG PULL DETECTED - Total Liquidity: ${total_liquidity:.2f}")
-        elif current_price < (entry_price * 0.10):  # Price dropped 90%+
+        elif baseline_price and current_price < (baseline_price * 0.10):  # Price dropped 90%+
             update_data['rug_pull_occurred'] = 'yes'
             print(f"  🚨 RUG PULL SUSPECTED - Price crashed 90%+")
 
         # Update time-based price tracking
-        if minutes_since >= 15 and (not existing or not existing.get('price_15m_later') is None):
+        if minutes_since >= 15 and (not existing or existing.get('price_15m_later') is None):
             update_data['price_15m_later'] = current_price
 
-        if minutes_since >= 30 and (not existing or not existing.get('price_30m_later') is None):
+        if minutes_since >= 30 and (not existing or existing.get('price_30m_later') is None):
             update_data['price_30m_later'] = current_price
 
         if hours_since >= 1 and (not existing or not existing['price_1h_later']):
@@ -239,8 +259,9 @@ class PerformanceTracker:
             update_data['price_30d_later'] = current_price
 
         # Track max and min prices since entry
-        max_price = existing['max_price_since_entry'] if existing and existing['max_price_since_entry'] else entry_price
-        min_price = existing['min_price_since_entry'] if existing and existing['min_price_since_entry'] else entry_price
+        seed_price = baseline_price if baseline_price is not None else current_price
+        max_price = existing['max_price_since_entry'] if existing and existing['max_price_since_entry'] else seed_price
+        min_price = existing['min_price_since_entry'] if existing and existing['min_price_since_entry'] else seed_price
         
         if current_price > max_price:
             update_data['max_price_since_entry'] = current_price
@@ -251,8 +272,8 @@ class PerformanceTracker:
             min_price = current_price
 
         # Calculate max gain from max price reached (not current price)
-        max_gain = ((max_price - entry_price) / entry_price) * 100 if entry_price else None
-        min_gain = ((min_price - entry_price) / entry_price) * 100 if entry_price else None
+        max_gain = ((max_price - seed_price) / seed_price) * 100 if seed_price else None
+        min_gain = ((min_price - seed_price) / seed_price) * 100 if seed_price else None
 
         # Update max gain/loss observed (cap at -100% minimum)
         if max_gain is not None:
@@ -298,7 +319,7 @@ class PerformanceTracker:
 
         self.db.insert_performance_history(call_id, {
             'decision_status': decision_status,
-            'reference_price': entry_price,
+            'reference_price': baseline_price,
             'price_usd': current_price,
             'liquidity_usd': current_liquidity,
             'total_liquidity': total_liquidity,
@@ -311,6 +332,36 @@ class PerformanceTracker:
             'rug_pull_occurred': update_data.get('rug_pull_occurred'),
         })
         print(f"  ✅ Performance updated (checkpoint: {checkpoint_type})")
+
+    def _record_failed_history_snapshot(
+        self,
+        token: Dict[str, Any],
+        reference_price: Optional[float],
+        decision_status: Optional[str]
+    ) -> None:
+        """Record a null history row when a token update fails unexpectedly."""
+        try:
+            self.db.insert_performance_history(token.get('call_id'), {
+                'decision_status': decision_status or 'UNKNOWN',
+                'reference_price': reference_price,
+                'price_usd': None,
+                'liquidity_usd': None,
+                'total_liquidity': None,
+                'market_cap': None,
+                'gain_loss_pct': None,
+                'price_change_pct': None,
+                'liquidity_change_pct': None,
+                'market_cap_change_pct': None,
+                'token_still_alive': 'unknown',
+                'rug_pull_occurred': None
+            })
+        except Exception as history_error:
+            tracker_logger.error(
+                "Failed to record failure history snapshot",
+                call_id=token.get('call_id'),
+                token=token.get('token_symbol'),
+                error=str(history_error)
+            )
 
     def run_update(self, limit: int = None, min_age_hours: float = 0) -> tuple[int, int]:
         """
@@ -427,16 +478,14 @@ class PerformanceTracker:
             'sources': set(),
             'error': None
         }
+        reference_price, _ = self.resolve_reference_price(token)
         
         try:
             print(f"  Checking {token['token_symbol']} from {token['source']}...")
-            
-            # Use actual trade entry price when available, otherwise fall back to call price
-            entry_price = token.get('trade_entry_price') or token.get('call_price')
             self.update_token_performance(
                 call_id=token['call_id'],
                 contract_address=token['contract_address'],
-                entry_price=entry_price,
+                reference_price=reference_price,
                 snapshot_timestamp=token['snapshot_timestamp'],
                 decision_status=token['my_decision'],
                 blockchain=token['blockchain']
@@ -454,6 +503,7 @@ class PerformanceTracker:
                 call_id=token['call_id'],
                 error=str(e)
             )
+            self._record_failed_history_snapshot(token, reference_price, token.get('my_decision'))
             # Add to dead letter queue
             self._add_to_dead_letter(token, str(e))
         
@@ -506,14 +556,13 @@ class PerformanceTracker:
         
         for i, token in enumerate(tokens, 1):
             print(f"[{i}/{len(tokens)}] {token['token_symbol']} from {token['source']}")
+            reference_price, _ = self.resolve_reference_price(token)
 
             try:
-                # Use actual trade entry price when available, otherwise fall back to call price
-                entry_price = token.get('trade_entry_price') or token.get('call_price')
                 self.update_token_performance(
                     call_id=token['call_id'],
                     contract_address=token['contract_address'],
-                    entry_price=entry_price,
+                    reference_price=reference_price,
                     snapshot_timestamp=token['snapshot_timestamp'],
                     decision_status=token['my_decision'],
                     blockchain=token['blockchain']
@@ -526,6 +575,7 @@ class PerformanceTracker:
                     call_id=token['call_id'],
                     error=str(e)
                 )
+                self._record_failed_history_snapshot(token, reference_price, token.get('my_decision'))
                 # Add to dead letter queue
                 self._add_to_dead_letter(token, str(e))
 

@@ -202,7 +202,7 @@ class MemecoinAnalyzer:
         display_analysis(token_symbol, token_name, source, data)
 
         # Get user decision
-        self.get_user_decision(call_id, contract_address, data)
+        self.get_user_decision(call_id, contract_address, data, blockchain=blockchain)
 
         # Update source performance for all sources
         sources = [self.db.normalize_source_name(s) for s in source.split(',')]
@@ -211,7 +211,7 @@ class MemecoinAnalyzer:
 
         print(f"\n✅ Saved to database (Call ID: {call_id})")
 
-    def get_user_decision(self, call_id: int, contract_address: str, data: TokenData) -> None:
+    def get_user_decision(self, call_id: int, contract_address: str, data: TokenData, blockchain: str = 'solana') -> None:
         """Get and record user's trading decision.
 
         Args:
@@ -236,7 +236,8 @@ class MemecoinAnalyzer:
 
         # Get additional details
         trade_size_usd = None
-        entry_price = data.get('price_usd')  # Default to call price
+        call_price = data.get('price_usd')
+        entry_price = None
         entry_timestamp = None
         chart_assessment = None
 
@@ -244,11 +245,15 @@ class MemecoinAnalyzer:
             # Fetch CURRENT price for entry (not snapshot price which is the call price)
             print("\n⏳ Fetching current price for entry...")
             current_data = self.fetcher.fetch_birdeye_data(contract_address, blockchain=blockchain)
-            if current_data:
+            if current_data and current_data.get('price_usd'):
                 entry_price = current_data.get('price_usd')
                 print(f"💰 Current Entry Price: ${entry_price:.10f}")
             else:
-                print(f"⚠️  Could not fetch current price, using call price: ${entry_price:.10f}")
+                entry_price = call_price
+                if entry_price:
+                    print(f"⚠️  Could not fetch current price, using call price: ${entry_price:.10f}")
+                else:
+                    print("⚠️  Could not fetch current price or call price; entry price unavailable")
 
             entry_timestamp = datetime.now().isoformat()
             try:
@@ -299,6 +304,26 @@ class MemecoinAnalyzer:
             chart_assessment=chart_assessment,
             entry_timestamp=entry_timestamp
         )
+
+        # Insert initial history checkpoint at call/decision time so tracking starts immediately.
+        reference_price = entry_price if decision == 'TRADE' else call_price
+        observed_price = call_price if call_price is not None else entry_price
+        initial_gain_loss = ((observed_price - reference_price) / reference_price) * 100 if reference_price and observed_price else None
+
+        self.db.insert_performance_history(call_id, {
+            'decision_status': decision,
+            'reference_price': reference_price,
+            'price_usd': observed_price,
+            'liquidity_usd': data.get('liquidity_usd'),
+            'total_liquidity': data.get('total_liquidity') or data.get('liquidity_usd'),
+            'market_cap': data.get('market_cap'),
+            'gain_loss_pct': initial_gain_loss,
+            'price_change_pct': None,
+            'liquidity_change_pct': None,
+            'market_cap_change_pct': None,
+            'token_still_alive': 'yes' if observed_price else 'unknown',
+            'rug_pull_occurred': None
+        })
 
     def view_source_stats(self) -> None:
         """Display statistics for all tracked sources."""
@@ -877,9 +902,12 @@ class MemecoinAnalyzer:
 
         # Fetch CURRENT price for entry
         print("\n⏳ Fetching current price for entry...")
-        current_data = self.fetcher.fetch_birdeye_data(contract_address, blockchain=selected_token.get('blockchain', 'solana'))
+        current_data = self.fetcher.fetch_birdeye_data(
+            contract_address,
+            blockchain=(selected_token.get('blockchain') or 'solana').lower()
+        )
 
-        if current_data:
+        if current_data and current_data.get('price_usd'):
             entry_price = current_data.get('price_usd')
             print(f"💰 Current Entry Price: ${entry_price:.10f}")
         else:
@@ -932,7 +960,7 @@ class MemecoinAnalyzer:
             confidence_level = 5
 
         # Update the decision from WATCH to TRADE with new entry price
-        self.db.cursor.execute('''
+        self.db._execute('''
             UPDATE my_decisions
             SET my_decision = 'TRADE',
                 trade_size_usd = ?,
@@ -947,6 +975,29 @@ class MemecoinAnalyzer:
               emotional_state, confidence_level, chart_assessment, call_id))
 
         self.db.conn.commit()
+
+        # Insert conversion checkpoint so time-series includes decision transition point.
+        checkpoint_price = current_data.get('price_usd') if current_data else entry_price
+        checkpoint_liquidity = current_data.get('liquidity_usd') if current_data else None
+        checkpoint_total_liquidity = (
+            current_data.get('total_liquidity') or current_data.get('liquidity_usd')
+        ) if current_data else None
+        checkpoint_mcap = current_data.get('market_cap') if current_data else None
+        checkpoint_gain_loss = ((checkpoint_price - entry_price) / entry_price) * 100 if checkpoint_price and entry_price else None
+        self.db.insert_performance_history(call_id, {
+            'decision_status': 'TRADE',
+            'reference_price': entry_price,
+            'price_usd': checkpoint_price,
+            'liquidity_usd': checkpoint_liquidity,
+            'total_liquidity': checkpoint_total_liquidity,
+            'market_cap': checkpoint_mcap,
+            'gain_loss_pct': checkpoint_gain_loss,
+            'price_change_pct': None,
+            'liquidity_change_pct': None,
+            'market_cap_change_pct': None,
+            'token_still_alive': 'yes' if checkpoint_price else 'unknown',
+            'rug_pull_occurred': None
+        })
 
         print(f"\n✅ ${selected_token['token_symbol']} converted to TRADE!")
         print(f"💰 Entry Price: ${entry_price:.10f}")
@@ -967,8 +1018,12 @@ class MemecoinAnalyzer:
                 c.token_symbol,
                 c.token_name,
                 c.contract_address,
+                c.blockchain,
+                s.price_usd as call_price,
+                d.entry_price,
                 d.timestamp_decision
             FROM calls_received c
+            JOIN initial_snapshot s ON c.call_id = s.call_id
             JOIN my_decisions d ON c.call_id = d.call_id
             WHERE d.my_decision = 'WATCH'
             ORDER BY d.timestamp_decision DESC
@@ -1007,12 +1062,38 @@ class MemecoinAnalyzer:
             return
 
         # Change decision from WATCH to PASS
-        self.db.cursor.execute('''
+        self.db._execute('''
             UPDATE my_decisions
             SET my_decision = 'PASS'
             WHERE call_id = ? AND my_decision = 'WATCH'
         ''', (selected_token['call_id'],))
         self.db.conn.commit()
+
+        # Insert final watchlist checkpoint at removal time.
+        live = self.fetcher.fetch_birdeye_data(
+            selected_token['contract_address'],
+            blockchain=(selected_token.get('blockchain') or 'solana')
+        )
+        pass_price = live.get('price_usd') if live else None
+        pass_liquidity = live.get('liquidity_usd') if live else None
+        pass_total_liquidity = (live.get('total_liquidity') or live.get('liquidity_usd')) if live else None
+        pass_mcap = live.get('market_cap') if live else None
+        call_price = selected_token.get('call_price')
+        pass_gain_loss = ((pass_price - call_price) / call_price) * 100 if pass_price and call_price else None
+        self.db.insert_performance_history(selected_token['call_id'], {
+            'decision_status': 'PASS',
+            'reference_price': call_price,
+            'price_usd': pass_price,
+            'liquidity_usd': pass_liquidity,
+            'total_liquidity': pass_total_liquidity,
+            'market_cap': pass_mcap,
+            'gain_loss_pct': pass_gain_loss,
+            'price_change_pct': None,
+            'liquidity_change_pct': None,
+            'market_cap_change_pct': None,
+            'token_still_alive': 'yes' if pass_price else 'unknown',
+            'rug_pull_occurred': None
+        })
 
         print(f"\n✅ ${selected_token['token_symbol']} removed from watchlist")
 
@@ -1194,7 +1275,7 @@ class MemecoinAnalyzer:
 
         # Update database
         updated_source = ', '.join(all_sources)
-        self.db.cursor.execute('''
+        self.db._execute('''
             UPDATE calls_received
             SET source = ?
             WHERE contract_address = ?
@@ -1272,6 +1353,22 @@ class MemecoinAnalyzer:
             entry_price = selected_trade['entry_price']
             pnl_percent = ((exit_price - entry_price) / entry_price * 100) if entry_price else 0
             pnl_indicator = "📈" if pnl_percent > 0 else "📉" if pnl_percent < 0 else "➡️"
+
+            # Insert final trade checkpoint at exit time.
+            self.db.insert_performance_history(selected_trade['call_id'], {
+                'decision_status': 'TRADE',
+                'reference_price': entry_price,
+                'price_usd': exit_price,
+                'liquidity_usd': None,
+                'total_liquidity': None,
+                'market_cap': None,
+                'gain_loss_pct': pnl_percent if entry_price else None,
+                'price_change_pct': None,
+                'liquidity_change_pct': None,
+                'market_cap_change_pct': None,
+                'token_still_alive': 'unknown',
+                'rug_pull_occurred': None
+            })
 
             print(f"\n✅ Exit recorded successfully!")
             print(f"{pnl_indicator} P&L: {pnl_percent:+.2f}%")
