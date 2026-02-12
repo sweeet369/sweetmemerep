@@ -59,6 +59,14 @@ Last worked on by: Codex (GPT-5)
   - Confirmed stale-data issue cleared by live update run on Feb 12, 2026.
   - Pushed all Step 1-8 changes to `main` (including follow-up BRIDGE status corrections).
   - Remaining manual items are listed in `Open Questions for Sweet`.
+- 2026-02-12 (Codex): Clarified trigger behavior with Sweet:
+  - `.github/workflows/tracker.yml` has a built-in cron fallback every 4 hours.
+  - Recent 5-minute runs shown in Actions are `repository_dispatch` events from external automation.
+  - Effective update cadence is 5 minutes as long as external dispatch continues.
+- 2026-02-12 (Codex): Alerting behavior updated per Sweet request:
+  - `performance_tracker.py` now exits with non-zero status if any token update fails in a run.
+  - This causes GitHub Actions run status to fail for partial token failures, which triggers existing Discord failure notification logic.
+  - Successful runs with zero token update failures still exit 0 and send no Discord message.
 
 ## Known Issues
 <!-- Active bugs or problems not yet resolved -->

@@ -312,7 +312,7 @@ class PerformanceTracker:
         })
         print(f"  ✅ Performance updated (checkpoint: {checkpoint_type})")
 
-    def run_update(self, limit: int = None, min_age_hours: float = 0):
+    def run_update(self, limit: int = None, min_age_hours: float = 0) -> tuple[int, int]:
         """
         Run performance update for all tracked tokens.
 
@@ -334,7 +334,7 @@ class PerformanceTracker:
             print("\n⚠️  No active tokens to track!")
             print("💡 Tokens are only tracked if they are WATCH or open TRADE positions.")
             print("💡 PASS decisions and closed trades (with exit recorded) are not tracked.")
-            return
+            return 0, 0
 
         # Filter by age if specified
         if min_age_hours > 0:
@@ -382,6 +382,7 @@ class PerformanceTracker:
         print("\n" + "="*60)
         print("✅ Performance tracking complete!")
         print("="*60)
+        return updated_count, error_count
 
     def show_summary(self):
         """Show a summary of tracked tokens."""
@@ -691,8 +692,11 @@ def main():
         if args.summary:
             tracker.show_summary()
         else:
-            tracker.run_update(limit=args.limit, min_age_hours=args.min_age)
+            _, error_count = tracker.run_update(limit=args.limit, min_age_hours=args.min_age)
             tracker.show_summary()
+            if error_count > 0:
+                print(f"\n❌ Tracker run had {error_count} token update failure(s). Exiting with non-zero status.")
+                raise SystemExit(1)
     except KeyboardInterrupt:
         print("\n\n👋 Interrupted. Stopping...")
     except Exception as e:
