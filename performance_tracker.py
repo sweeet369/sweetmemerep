@@ -98,7 +98,11 @@ class PerformanceTracker:
         return ((current_price - entry_price) / entry_price) * 100
 
     def resolve_reference_price(self, token: Dict[str, Any]) -> tuple[Optional[float], str]:
-        """Resolve which baseline price should be used for performance calculations."""
+        """Resolve which baseline price should be used for performance calculations.
+
+        Returns (price, label).  Price may be None when no baseline exists;
+        callers must guard against this before doing arithmetic.
+        """
         decision_status = token.get('my_decision')
         call_price = token.get('call_price')
         trade_entry_price = token.get('trade_entry_price')
@@ -106,14 +110,27 @@ class PerformanceTracker:
         if decision_status == 'TRADE':
             if trade_entry_price:
                 return trade_entry_price, 'trade_entry_price'
-            tracker_logger.warning(
-                "TRADE token missing entry price; using call_price fallback",
+            if call_price:
+                tracker_logger.warning(
+                    "TRADE token missing entry price; using call_price fallback",
+                    call_id=token.get('call_id'),
+                    token=token.get('token_symbol')
+                )
+                return call_price, 'call_price_fallback'
+            tracker_logger.error(
+                "TRADE token has no entry_price and no call_price",
                 call_id=token.get('call_id'),
                 token=token.get('token_symbol')
             )
-            return call_price, 'call_price_fallback'
+            return None, 'none'
 
-        # WATCH tokens always use call price baseline.
+        # WATCH tokens use call price baseline.
+        if not call_price:
+            tracker_logger.warning(
+                "WATCH token has no call_price baseline",
+                call_id=token.get('call_id'),
+                token=token.get('token_symbol')
+            )
         return call_price, 'call_price'
 
     def update_token_performance(self, call_id: int, contract_address: str,
@@ -568,6 +585,11 @@ class PerformanceTracker:
                     blockchain=token['blockchain']
                 )
                 updated_count += 1
+
+                # Only update source stats for successfully updated tokens
+                source_list = [s.strip() for s in token['source'].split(',') if s.strip()]
+                for source in source_list:
+                    sources_to_update.add(source)
             except Exception as e:
                 error_count += 1
                 tracker_logger.error("Failed to update token",
@@ -578,11 +600,6 @@ class PerformanceTracker:
                 self._record_failed_history_snapshot(token, reference_price, token.get('my_decision'))
                 # Add to dead letter queue
                 self._add_to_dead_letter(token, str(e))
-
-            # Split comma-separated sources and add each individually
-            source_list = [s.strip() for s in token['source'].split(',') if s.strip()]
-            for source in source_list:
-                sources_to_update.add(source)
 
             # Rate limiting to avoid API throttling
             if i < len(tokens):

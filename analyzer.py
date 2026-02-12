@@ -306,9 +306,11 @@ class MemecoinAnalyzer:
         )
 
         # Insert initial history checkpoint at call/decision time so tracking starts immediately.
+        # For TRADE the baseline is entry_price; for WATCH it's call_price.
+        # The first checkpoint is always 0% gain since we just entered.
         reference_price = entry_price if decision == 'TRADE' else call_price
-        observed_price = call_price if call_price is not None else entry_price
-        initial_gain_loss = ((observed_price - reference_price) / reference_price) * 100 if reference_price and observed_price else None
+        observed_price = entry_price if decision == 'TRADE' else call_price
+        initial_gain_loss = 0.0 if reference_price else None
 
         self.db.insert_performance_history(call_id, {
             'decision_status': decision,

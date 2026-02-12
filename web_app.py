@@ -194,7 +194,7 @@ def update_decision(call_id):
 
         if decision == 'TRADE' and current_decision != 'TRADE':
             # Use current market price for trade entry, not call price.
-            new_entry_price = checkpoint_price or trade_entry_price or call_price
+            new_entry_price = checkpoint_price or call_price
             entry_timestamp = datetime.now().isoformat()
             db._execute('''
                 UPDATE my_decisions
@@ -204,12 +204,10 @@ def update_decision(call_id):
             trade_entry_price = new_entry_price
         else:
             db._execute('''
-                UPDATE my_decisions 
+                UPDATE my_decisions
                 SET my_decision = ?, reasoning_notes = ?
                 WHERE call_id = ?
             ''', (decision, notes, call_id))
-
-        db.conn.commit()
 
         # Record a decision-transition checkpoint so history is continuous
         # up to the moment of PASS or TRADE conversion.
@@ -233,11 +231,14 @@ def update_decision(call_id):
                 'token_still_alive': 'yes' if checkpoint_price else 'unknown',
                 'rug_pull_occurred': None
             })
-        
+
+        # Commit both the decision update and history insert atomically.
+        db.conn.commit()
+
         flash(f'Decision updated to {decision}', 'success')
-        
+
     except Exception as e:
-        # Clear failed transaction state so subsequent requests can execute queries.
+        # Rollback undoes both the decision change AND the history insert.
         db.conn.rollback()
         flash(f'Error updating decision: {str(e)}', 'error')
     

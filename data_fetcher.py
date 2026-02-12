@@ -266,8 +266,11 @@ class MemecoinDataFetcher:
         self.max_backoff = max_backoff
         self._api_cache = TTLCache(ttl_seconds=60)  # Instance-level cache
         # If Birdeye has transport/server failures, skip it briefly and use DexScreener first.
+        # Cooldown escalates with consecutive failures: 5m, 10m, 20m, ... up to 1h max.
         self._birdeye_disabled_until = 0.0
-        self._birdeye_cooldown_seconds = 300
+        self._birdeye_base_cooldown = 300  # 5 minutes
+        self._birdeye_max_cooldown = 3600  # 1 hour max
+        self._birdeye_consecutive_failures = 0
 
     def _make_request(self, url: str, source: str, headers: Optional[Dict] = None,
                       params: Optional[Dict] = None) -> requests.Response:
@@ -376,8 +379,9 @@ class MemecoinDataFetcher:
                         'raw_data': data
                     }
                     
-                    # Cache successful result
+                    # Cache successful result and reset circuit breaker
                     self._api_cache.set(cache_key, result_data)
+                    self._birdeye_consecutive_failures = 0
                     return result_data
 
                 except RateLimitError as e:
@@ -398,11 +402,17 @@ class MemecoinDataFetcher:
                             error=str(e), attempt=attempt, delay=round(delay, 2))
                         time.sleep(delay)
                         continue
-                    # Try fallback after all retries exhausted
-                    self._birdeye_disabled_until = time.time() + self._birdeye_cooldown_seconds
+                    # Try fallback after all retries exhausted — escalating cooldown
+                    self._birdeye_consecutive_failures += 1
+                    cooldown = min(
+                        self._birdeye_base_cooldown * (2 ** (self._birdeye_consecutive_failures - 1)),
+                        self._birdeye_max_cooldown
+                    )
+                    self._birdeye_disabled_until = time.time() + cooldown
                     api_logger.warning("Birdeye failed, trying DexScreener fallback",
                         token=address[:8], error_type=type(e).__name__,
-                        birdeye_disabled_seconds=self._birdeye_cooldown_seconds)
+                        birdeye_disabled_seconds=cooldown,
+                        consecutive_failures=self._birdeye_consecutive_failures)
                     return self._fetch_dexscreener_fallback(address, blockchain)
 
                 except (ClientError, ParseError, NoDataError) as e:
