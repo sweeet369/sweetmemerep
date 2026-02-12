@@ -1,6 +1,8 @@
 name: Performance Tracker
 
 on:
+  schedule:
+    - cron: '0 */4 * * *'  # Every 4 hours
   workflow_dispatch:  # Allow manual trigger
   repository_dispatch:  # Allow external trigger via API
     types: [run-tracker]
@@ -31,3 +33,21 @@ jobs:
           BIRDEYE_API_KEY: ${{ secrets.BIRDEYE_API_KEY }}
         run: |
           python performance_tracker.py
+
+      - name: Notify Discord on failure
+        if: ${{ failure() && secrets.DISCORD_WEBHOOK_URL != '' }}
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          REPO: ${{ github.repository }}
+          WORKFLOW: ${{ github.workflow }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_NUMBER: ${{ github.run_number }}
+          REF_NAME: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+        run: |
+          SHORT_SHA=$(echo "$SHA" | cut -c1-7)
+          RUN_URL="https://github.com/$REPO/actions/runs/$RUN_ID"
+          MSG="🚨 Workflow failed: $WORKFLOW (#$RUN_NUMBER) on $REPO [$REF_NAME @ $SHORT_SHA] - $RUN_URL"
+          curl -sS -H "Content-Type: application/json" \
+            -d "{\"content\":\"$MSG\"}" \
+            "$DISCORD_WEBHOOK_URL" >/dev/null || true

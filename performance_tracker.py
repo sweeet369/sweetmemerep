@@ -635,14 +635,6 @@ class PerformanceTracker:
 def main():
     """Main entry point."""
     import argparse
-    import os
-
-    # Fail fast if BIRDEYE_API_KEY is missing
-    if not os.environ.get('BIRDEYE_API_KEY'):
-        print("❌ FATAL: BIRDEYE_API_KEY environment variable is not set!")
-        print("💡 Set it in your environment or .env file")
-        print("💡 For GitHub Actions, add it as a repository secret")
-        raise SystemExit(1)
 
     parser = argparse.ArgumentParser(description='Track memecoin performance over time')
     parser.add_argument('-l', '--limit', type=int, help='Limit number of tokens to update')
@@ -663,9 +655,13 @@ def main():
 
     args = parser.parse_args()
 
+    use_parallel = False
+    if not args.sequential:
+        print("⚠️  Parallel mode disabled for reliability; running sequential updates.")
+
     tracker = PerformanceTracker(
         max_workers=args.workers,
-        use_parallel=not args.sequential
+        use_parallel=use_parallel
     )
     
     # Handle dead letter queue commands

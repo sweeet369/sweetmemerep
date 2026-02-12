@@ -107,6 +107,13 @@ class MemecoinDatabase:
         parts = [cls.normalize_source_name(s) for s in sources.split(',') if s.strip()]
         return ', '.join(parts)
 
+    @staticmethod
+    def normalize_blockchain(blockchain: str | None) -> str:
+        """Normalize blockchain name for consistent storage."""
+        if not blockchain:
+            return 'solana'
+        return blockchain.strip().lower()
+
     def _placeholder(self) -> str:
         """Return the correct placeholder for the database type."""
         return '%s' if self.db_type == 'postgres' else '?'
@@ -342,6 +349,7 @@ class MemecoinDatabase:
         """Insert a new call received record."""
         timestamp = datetime.now().isoformat()
         source = self.normalize_sources(source) if source else source
+        blockchain = self.normalize_blockchain(blockchain)
 
         try:
             if self.db_type == 'postgres':

@@ -108,7 +108,7 @@ def add_token():
                 token_symbol=data.get('token_symbol', 'UNKNOWN'),
                 token_name=data.get('token_name', 'Unknown Token'),
                 source=source,
-                blockchain=blockchain.capitalize()
+                blockchain=blockchain
             )
             
             # Insert snapshot

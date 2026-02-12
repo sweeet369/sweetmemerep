@@ -265,6 +265,9 @@ class MemecoinDataFetcher:
         self.retry_attempts = retry_attempts
         self.max_backoff = max_backoff
         self._api_cache = TTLCache(ttl_seconds=60)  # Instance-level cache
+        # If Birdeye has transport/server failures, skip it briefly and use DexScreener first.
+        self._birdeye_disabled_until = 0.0
+        self._birdeye_cooldown_seconds = 300
 
     def _make_request(self, url: str, source: str, headers: Optional[Dict] = None,
                       params: Optional[Dict] = None) -> requests.Response:
@@ -310,6 +313,15 @@ class MemecoinDataFetcher:
         if cached:
             api_logger.debug("Cache hit for Birdeye", token=address[:8], blockchain=blockchain)
             return cached
+
+        now = time.time()
+        if now < self._birdeye_disabled_until:
+            cooldown_left = round(self._birdeye_disabled_until - now, 2)
+            api_logger.warning(
+                "Birdeye temporarily disabled, using DexScreener as primary",
+                token=address[:8], blockchain=blockchain, cooldown_left_seconds=cooldown_left
+            )
+            return self._fetch_dexscreener_fallback(address, blockchain)
 
         if not BIRDEYE_API_KEY:
             api_logger.warning("Birdeye API key not configured, trying DexScreener fallback", 
@@ -387,8 +399,10 @@ class MemecoinDataFetcher:
                         time.sleep(delay)
                         continue
                     # Try fallback after all retries exhausted
+                    self._birdeye_disabled_until = time.time() + self._birdeye_cooldown_seconds
                     api_logger.warning("Birdeye failed, trying DexScreener fallback",
-                        token=address[:8], error_type=type(e).__name__)
+                        token=address[:8], error_type=type(e).__name__,
+                        birdeye_disabled_seconds=self._birdeye_cooldown_seconds)
                     return self._fetch_dexscreener_fallback(address, blockchain)
 
                 except (ClientError, ParseError, NoDataError) as e:
@@ -1064,78 +1078,6 @@ class MemecoinDataFetcher:
 
         return combined_data
 
-
-if __name__ == "__main__":
-    # Test with BONK token
-    print("Testing MemecoinDataFetcher with BONK token...")
-    print("=" * 60)
-
-    fetcher = MemecoinDataFetcher()
-    address = "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263"
-
-    data = fetcher.fetch_all_data(address)
-
-    if data:
-        print(f"\n✅ Data fetched successfully from {data.get('data_source', 'Unknown')}!")
-        print("\n📊 MARKET DATA:")
-        print(f"   Price: ${data.get('price_usd', 0):.8f}")
-        print(f"   Liquidity: ${data.get('liquidity_usd', 0):,.2f}")
-        print(f"   24h Volume: ${data.get('volume_24h', 0):,.2f}")
-        print(f"   Market Cap: ${data.get('market_cap', 0):,.2f}")
-        print(f"   Token Age: {data.get('token_age_hours', 0):.1f} hours")
-
-        print("\n📈 PRICE CHANGES:")
-        if data.get('price_change_5m') is not None:
-            print(f"   5m: {data['price_change_5m']:+.2f}%")
-        if data.get('price_change_1h') is not None:
-            print(f"   1h: {data['price_change_1h']:+.2f}%")
-        if data.get('price_change_24h') is not None:
-            print(f"   24h: {data['price_change_24h']:+.2f}%")
-
-        print("\n🔒 SECURITY DATA:")
-        print(f"   Holders: {data.get('holder_count', 'N/A')}")
-        print(f"   Top Holder: {data.get('top_holder_percent', 0):.2f}%")
-        print(f"   Mint Revoked: {'✅' if data.get('mint_authority_revoked') else '❌'}")
-        print(f"   Freeze Revoked: {'✅' if data.get('freeze_authority_revoked') else '❌'}")
-        print(f"   Security Score: {data.get('rugcheck_score', 'N/A')}")
-
-        # NEW: Honeypot risk
-        print(f"\n🚨 HONEYPOT RISK: {data.get('honeypot_risk', 'UNKNOWN')}")
-
-        # NEW: Token taxes
-        buy_tax = data.get('estimated_buy_tax', 0)
-        sell_tax = data.get('estimated_sell_tax', 0)
-        if buy_tax > 0 or sell_tax > 0:
-            print(f"💸 Token Taxes: Buy {buy_tax:.0f}% / Sell {sell_tax:.0f}%")
-
-        # NEW: Holder distribution
-        holder_conc = data.get('holder_concentration')
-        if holder_conc:
-            print(f"\n📊 HOLDER DISTRIBUTION:")
-            print(f"   Concentration: {holder_conc}")
-            print(f"   Top 5 Holders: {data.get('top_5_pct', 0):.1f}%")
-            print(f"   Whale Count: {data.get('whale_count', 0)}")
-
-        # NEW: Momentum indicators
-        print(f"\n📈 MOMENTUM:")
-        print(f"   Score: {data.get('momentum_score', 5):.1f}/10")
-        print(f"   Buy/Sell Pressure: {data.get('buy_sell_pressure', 'NEUTRAL')}")
-        print(f"   Price Momentum: {data.get('price_momentum', 'NEUTRAL')}")
-        print(f"   Volume Trend: {data.get('volume_trend', 'UNKNOWN')}")
-
-        print(f"\n🎯 SAFETY SCORE: {data.get('safety_score', 0):.1f}/10")
-
-        if data.get('red_flags'):
-            print("\n⚠️  RED FLAGS:")
-            for flag in data['red_flags']:
-                print(f"   {flag}")
-        else:
-            print("\n✅ No major red flags detected!")
-
-    else:
-        print("\n❌ Failed to fetch data")
-
-
     def _fetch_dexscreener_fallback(self, address: str, blockchain: str = 'solana') -> Optional[Dict[str, Any]]:
         """Fetch market data from DexScreener as fallback when Birdeye fails.
         
@@ -1273,3 +1215,74 @@ if __name__ == "__main__":
             health['dexscreener']['error'] = str(e)
         
         return health
+
+
+if __name__ == "__main__":
+    # Test with BONK token
+    print("Testing MemecoinDataFetcher with BONK token...")
+    print("=" * 60)
+
+    fetcher = MemecoinDataFetcher()
+    address = "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263"
+
+    data = fetcher.fetch_all_data(address)
+
+    if data:
+        print(f"\n✅ Data fetched successfully from {data.get('data_source', 'Unknown')}!")
+        print("\n📊 MARKET DATA:")
+        print(f"   Price: ${data.get('price_usd', 0):.8f}")
+        print(f"   Liquidity: ${data.get('liquidity_usd', 0):,.2f}")
+        print(f"   24h Volume: ${data.get('volume_24h', 0):,.2f}")
+        print(f"   Market Cap: ${data.get('market_cap', 0):,.2f}")
+        print(f"   Token Age: {data.get('token_age_hours', 0):.1f} hours")
+
+        print("\n📈 PRICE CHANGES:")
+        if data.get('price_change_5m') is not None:
+            print(f"   5m: {data['price_change_5m']:+.2f}%")
+        if data.get('price_change_1h') is not None:
+            print(f"   1h: {data['price_change_1h']:+.2f}%")
+        if data.get('price_change_24h') is not None:
+            print(f"   24h: {data['price_change_24h']:+.2f}%")
+
+        print("\n🔒 SECURITY DATA:")
+        print(f"   Holders: {data.get('holder_count', 'N/A')}")
+        print(f"   Top Holder: {data.get('top_holder_percent', 0):.2f}%")
+        print(f"   Mint Revoked: {'✅' if data.get('mint_authority_revoked') else '❌'}")
+        print(f"   Freeze Revoked: {'✅' if data.get('freeze_authority_revoked') else '❌'}")
+        print(f"   Security Score: {data.get('rugcheck_score', 'N/A')}")
+
+        # NEW: Honeypot risk
+        print(f"\n🚨 HONEYPOT RISK: {data.get('honeypot_risk', 'UNKNOWN')}")
+
+        # NEW: Token taxes
+        buy_tax = data.get('estimated_buy_tax', 0)
+        sell_tax = data.get('estimated_sell_tax', 0)
+        if buy_tax > 0 or sell_tax > 0:
+            print(f"💸 Token Taxes: Buy {buy_tax:.0f}% / Sell {sell_tax:.0f}%")
+
+        # NEW: Holder distribution
+        holder_conc = data.get('holder_concentration')
+        if holder_conc:
+            print(f"\n📊 HOLDER DISTRIBUTION:")
+            print(f"   Concentration: {holder_conc}")
+            print(f"   Top 5 Holders: {data.get('top_5_pct', 0):.1f}%")
+            print(f"   Whale Count: {data.get('whale_count', 0)}")
+
+        # NEW: Momentum indicators
+        print(f"\n📈 MOMENTUM:")
+        print(f"   Score: {data.get('momentum_score', 5):.1f}/10")
+        print(f"   Buy/Sell Pressure: {data.get('buy_sell_pressure', 'NEUTRAL')}")
+        print(f"   Price Momentum: {data.get('price_momentum', 'NEUTRAL')}")
+        print(f"   Volume Trend: {data.get('volume_trend', 'UNKNOWN')}")
+
+        print(f"\n🎯 SAFETY SCORE: {data.get('safety_score', 0):.1f}/10")
+
+        if data.get('red_flags'):
+            print("\n⚠️  RED FLAGS:")
+            for flag in data['red_flags']:
+                print(f"   {flag}")
+        else:
+            print("\n✅ No major red flags detected!")
+
+    else:
+        print("\n❌ Failed to fetch data")
