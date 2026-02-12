@@ -5,9 +5,9 @@
 
 ## Current Project Status
 <!-- Updated by whichever AI last worked on the project -->
-Status: STABILIZING — tracker pipeline restored; cron + failure alerting configured; Birdeye degraded with DexScreener fallback active
+Status: STABLE — tracker pipeline running; transaction safety + circuit breaker bugs fixed; Birdeye degraded with DexScreener fallback active
 Last updated: 2026-02-12
-Last worked on by: Codex (GPT-5)
+Last worked on by: Claude Code (Claude Opus 4.6)
 
 ## Open Questions for Sweet
 <!-- Things that need human input — API keys, credentials, decisions -->
@@ -142,3 +142,19 @@ Full audit completed. Findings:
 - Recommended changes to the fix plan:
   - Keep step order but treat GoPlus as validation/hardening rather than outage recovery.
   - Prioritize Birdeye graceful degradation and tracker runtime continuity (DexScreener fallback path + remove hard fail).
+
+### From Claude Code (Feb 12, 2026) — Post-Codex Review:
+Reviewed all Codex changes. Found and fixed 5 bugs left behind:
+
+**Fixes applied (commit `17110e8`):**
+1. **web_app.py transaction safety**: Decision update + history insert were committed separately. If history failed, decision was already committed and rollback didn't undo it. Fixed by moving `db.conn.commit()` after both writes.
+2. **web_app.py entry price fallback**: WATCH→TRADE conversion fallback chain included `trade_entry_price` which can't exist yet for a WATCH token. Removed from fallback — now uses `checkpoint_price or call_price`.
+3. **performance_tracker.py null baseline**: `resolve_reference_price()` could return None silently. Added explicit null guards and logging for WATCH tokens with no call_price and TRADE tokens with no entry_price.
+4. **performance_tracker.py source tracking**: In sequential mode, sources were added to the update set even when the token update failed. Moved inside the success branch.
+5. **analyzer.py initial checkpoint**: First history row calculated `(call_price - entry_price) / entry_price` which is backwards. Initial checkpoint should always be 0% gain since you just entered/started watching. Fixed.
+6. **data_fetcher.py circuit breaker**: Birdeye cooldown was fixed at 5 minutes and reset every time. Now uses escalating cooldown (5m→10m→20m→40m→1h max) with consecutive failure tracking. Resets to 0 on success.
+
+**Validated not a bug:**
+- Source matching query in `database.py` — the LIKE patterns are correct for comma-separated sources with normalized data.
+
+**Verified end-to-end:** Ran `python performance_tracker.py --limit 2` — both tokens updated successfully via DexScreener fallback. Circuit breaker escalation working correctly.
