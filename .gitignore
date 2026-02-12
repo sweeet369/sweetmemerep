@@ -30,3 +30,6 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Dead letter queue
+failed_requests.json

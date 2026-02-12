@@ -185,8 +185,9 @@ class PerformanceTracker:
             print(f"  📊 Current: ${current_price:.10f} ({gain_loss:+.2f}%)")
 
         # Get existing performance data
+        query = self.db._placeholder()
         self.db.cursor.execute(
-            'SELECT * FROM performance_tracking WHERE call_id = ?',
+            f'SELECT * FROM performance_tracking WHERE call_id = {query}',
             (call_id,)
         )
         existing = self.db.cursor.fetchone()
@@ -209,13 +210,6 @@ class PerformanceTracker:
             'current_liquidity': current_liquidity,
             'checkpoint_type': checkpoint_type
         }
-
-        # Track max and min prices since entry
-        if not existing or not existing['max_price_since_entry'] or current_price > existing['max_price_since_entry']:
-            update_data['max_price_since_entry'] = current_price
-
-        if not existing or not existing['min_price_since_entry'] or current_price < existing['min_price_since_entry']:
-            update_data['min_price_since_entry'] = current_price
 
         # Determine if this is a rug pull (liquidity dropped significantly or price near zero)
         if total_liquidity is not None and total_liquidity < 1000:
@@ -244,19 +238,39 @@ class PerformanceTracker:
         if hours_since >= 720 and (not existing or not existing['price_30d_later']):  # 30 days
             update_data['price_30d_later'] = current_price
 
-        # Update max gain/loss observed (cap at -100% minimum)
-        if gain_loss is not None:
-            # Cap gain_loss at -100% (can't lose more than 100%)
-            capped_gain_loss = max(gain_loss, -100.0)
+        # Track max and min prices since entry
+        max_price = existing['max_price_since_entry'] if existing and existing['max_price_since_entry'] else entry_price
+        min_price = existing['min_price_since_entry'] if existing and existing['min_price_since_entry'] else entry_price
+        
+        if current_price > max_price:
+            update_data['max_price_since_entry'] = current_price
+            max_price = current_price
+        
+        if current_price < min_price:
+            update_data['min_price_since_entry'] = current_price
+            min_price = current_price
 
-            if not existing or not existing['max_gain_observed'] or capped_gain_loss > existing['max_gain_observed']:
-                update_data['max_gain_observed'] = capped_gain_loss
-                # Record time to max gain and timestamp when a new max is hit
+        # Calculate max gain from max price reached (not current price)
+        max_gain = ((max_price - entry_price) / entry_price) * 100 if entry_price else None
+        min_gain = ((min_price - entry_price) / entry_price) * 100 if entry_price else None
+
+        # Update max gain/loss observed (cap at -100% minimum)
+        if max_gain is not None:
+            # Cap at -100% (can't lose more than 100%)
+            capped_max_gain = max(max_gain, -100.0)
+            
+            if not existing or not existing['max_gain_observed'] or capped_max_gain > existing['max_gain_observed']:
+                update_data['max_gain_observed'] = capped_max_gain
+                # Record time to max gain when a new max is hit
                 update_data['time_to_max_gain_hours'] = hours_since
                 update_data['max_gain_timestamp'] = datetime.now().isoformat()
 
-            if not existing or not existing['max_loss_observed'] or capped_gain_loss < existing['max_loss_observed']:
-                update_data['max_loss_observed'] = capped_gain_loss
+        if min_gain is not None:
+            # Cap at -100% (can't lose more than 100%)
+            capped_min_gain = max(min_gain, -100.0)
+            
+            if not existing or not existing['max_loss_observed'] or capped_min_gain < existing['max_loss_observed']:
+                update_data['max_loss_observed'] = capped_min_gain
 
         # Track time to rug — record hours since snapshot when rug is first detected
         if update_data.get('rug_pull_occurred') in ('yes', True):

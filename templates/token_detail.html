@@ -155,7 +155,7 @@
                         <td>{{ entry.timestamp }}</td>
                         <td>${{ "%.10f"|format(entry.price_usd or 0) }}</td>
                         <td>{{ entry.market_cap | format_currency }}</td>
-                        <td class="{% if entry.gain_loss_pct > 0 %}positive{% elif entry.gain_loss_pct < 0 %}negative{% endif %}">
+                        <td class="{% if entry.gain_loss_pct and entry.gain_loss_pct > 0 %}positive{% elif entry.gain_loss_pct and entry.gain_loss_pct < 0 %}negative{% endif %}">
                             {{ "%.1f"|format(entry.gain_loss_pct or 0) }}%
                         </td>
                         <td>
