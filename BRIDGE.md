@@ -67,6 +67,14 @@ Last worked on by: Codex (GPT-5)
   - `performance_tracker.py` now exits with non-zero status if any token update fails in a run.
   - This causes GitHub Actions run status to fail for partial token failures, which triggers existing Discord failure notification logic.
   - Successful runs with zero token update failures still exit 0 and send no Discord message.
+- 2026-02-12 (Codex): Documented storage architecture for Sweet (where data lives, what tables store, and how to access/query):
+  - Confirmed runtime storage target is Supabase PostgreSQL (`DATABASE_URL` set).
+  - Local SQLite files remain present but currently not used for active data.
+  - Captured current live counts for core tables to validate data flow.
+- 2026-02-12 (Codex): Fixed web PASS/WATCH/TRADE update bug in Flask route:
+  - Root cause: `web_app.py` used raw `db.cursor.execute` with `?` placeholders (invalid for PostgreSQL), causing transaction abort state.
+  - Fix: switched to `db._execute(...)` in `/update_decision/<call_id>` and added explicit `db.conn.rollback()` inside exception handler.
+  - Validation: route POST now returns redirect successfully without `InFailedSqlTransaction`; PASS decision removes token from active WATCH/open-TRADE set.
 
 ## Known Issues
 <!-- Active bugs or problems not yet resolved -->

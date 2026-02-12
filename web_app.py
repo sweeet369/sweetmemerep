@@ -153,8 +153,8 @@ def update_decision(call_id):
             flash('Token not found', 'error')
             return redirect(url_for('dashboard'))
         
-        # Update decision
-        db.cursor.execute('''
+        # Update decision (use DB-aware placeholder handling)
+        db._execute('''
             UPDATE my_decisions 
             SET my_decision = ?, reasoning_notes = ?
             WHERE call_id = ?
@@ -164,6 +164,8 @@ def update_decision(call_id):
         flash(f'Decision updated to {decision}', 'success')
         
     except Exception as e:
+        # Clear failed transaction state so subsequent requests can execute queries.
+        db.conn.rollback()
         flash(f'Error updating decision: {str(e)}', 'error')
     
     return redirect(url_for('token_detail', call_id=call_id))
