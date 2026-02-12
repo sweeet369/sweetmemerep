@@ -60,6 +60,7 @@ Last worked on by: Codex (GPT-5)
   - Pushed all changes to `main`:
     - `e50cbf0` (Step 1 commit)
     - `9cbfd0c` (Steps 2-7 + BRIDGE session log)
+    - `84c316a` (Step 8 final BRIDGE status update)
   - Remaining manual items are listed in `Open Questions for Sweet`.
 
 ## Known Issues
