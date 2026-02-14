@@ -34,7 +34,7 @@
 - **Stack**: Python 3.11, Flask, PostgreSQL (Supabase), SQLite (local fallback)
 - **APIs**: Birdeye (market data, currently degraded), GoPlus (security data), DexScreener (fallback market data)
 - **Database**: Supabase PostgreSQL is the active DB. Local SQLite files exist but are empty.
-- **CI/CD**: GitHub Actions runs `performance_tracker.py` every 4 hours + external dispatch every 5 min
+- **CI/CD**: GitHub Actions runs `performance_tracker.py` every 5 minutes via external dispatch (4-hour cron as backup)
 - **Cross-AI coordination**: See `BRIDGE.md` for shared context between Claude Code and Codex
 
 ## Known Gotchas

@@ -35,7 +35,7 @@ jobs:
           python performance_tracker.py
 
       - name: Notify Discord on failure
-        if: ${{ failure() && secrets.DISCORD_WEBHOOK_URL != '' }}
+        if: failure()
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           REPO: ${{ github.repository }}
