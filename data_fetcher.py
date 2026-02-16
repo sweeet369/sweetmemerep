@@ -490,9 +490,9 @@ class MemecoinDataFetcher:
                             or str(data.get('transfer_pausable', '0')) == '1'
                         )
                         is_honeypot = str(data.get('is_honeypot', '0')) == '1'
-                        buy_tax = float(data.get('buy_tax', 0)) * 100  # GoPlus returns as decimal
-                        sell_tax = float(data.get('sell_tax', 0)) * 100
-                        holder_count = int(data.get('holder_count', 0))
+                        buy_tax = float(data.get('buy_tax') or 0) * 100  # GoPlus returns as decimal
+                        sell_tax = float(data.get('sell_tax') or 0) * 100
+                        holder_count = int(data.get('holder_count') or 0)
 
                         # Top holders from EVM response
                         top_holders_raw = data.get('holders', [])
@@ -579,12 +579,12 @@ class MemecoinDataFetcher:
         """Detect red flags in the token data."""
         red_flags = []
 
-        liquidity = data.get('liquidity_usd', 0)
+        liquidity = data.get('liquidity_usd') or 0
         mint_revoked = data.get('mint_authority_revoked', False)
         freeze_revoked = data.get('freeze_authority_revoked', False)
-        top_holder = data.get('top_holder_percent', 0)
-        token_age = data.get('token_age_hours', 0)
-        volume = data.get('volume_24h', 0)
+        top_holder = data.get('top_holder_percent') or 0
+        token_age = data.get('token_age_hours') or 0
+        volume = data.get('volume_24h') or 0
 
         # Critical flags
         if liquidity < 20000:
@@ -615,8 +615,8 @@ class MemecoinDataFetcher:
             red_flags.append("🟠 HIGH RISK: Moderate honeypot risk detected")
 
         # Token tax warnings
-        buy_tax = data.get('estimated_buy_tax', 0)
-        sell_tax = data.get('estimated_sell_tax', 0)
+        buy_tax = data.get('estimated_buy_tax') or 0
+        sell_tax = data.get('estimated_sell_tax') or 0
         if sell_tax > 20:
             red_flags.append(f"🔴 CRITICAL: Very high sell tax ({sell_tax:.0f}%)")
         elif sell_tax > 10:
@@ -662,7 +662,7 @@ class MemecoinDataFetcher:
             risk_score += 1
 
         # High sell tax indicator
-        sell_tax = data.get('estimated_sell_tax', 0)
+        sell_tax = data.get('estimated_sell_tax') or 0
         if sell_tax > 20:
             risk_score += 3
         elif sell_tax > 10:
@@ -671,7 +671,7 @@ class MemecoinDataFetcher:
             risk_score += 1
 
         # Extreme holder concentration
-        top_holder = data.get('top_holder_percent', 0)
+        top_holder = data.get('top_holder_percent') or 0
         if top_holder > 50:
             risk_score += 2
         elif top_holder > 30:
@@ -798,12 +798,12 @@ class MemecoinDataFetcher:
         """Calculate safety score (0-10) based on various factors."""
         score = 10.0
 
-        liquidity = data.get('liquidity_usd', 0)
+        liquidity = data.get('liquidity_usd') or 0
         mint_revoked = data.get('mint_authority_revoked', False)
         freeze_revoked = data.get('freeze_authority_revoked', False)
-        top_holder = data.get('top_holder_percent', 0)
-        token_age = data.get('token_age_hours', 0)
-        volume = data.get('volume_24h', 0)
+        top_holder = data.get('top_holder_percent') or 0
+        token_age = data.get('token_age_hours') or 0
+        volume = data.get('volume_24h') or 0
 
         # Critical deductions
         if liquidity < 20000:
