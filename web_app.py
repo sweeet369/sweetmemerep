@@ -7,7 +7,7 @@ A simple Flask web application for viewing and managing token analysis.
 import os
 import sys
 from datetime import datetime
-from flask import Flask, render_template, request, redirect, url_for, flash, jsonify
+from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, g
 
 # Import existing modules
 from database import MemecoinDatabase
@@ -17,8 +17,7 @@ from display import get_safety_rating, get_tier_emoji
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'dev-secret-key-change-in-production')
 
-# Initialize database and fetcher
-db = MemecoinDatabase()
+# Initialize fetcher (stateless, safe to share)
 fetcher = MemecoinDataFetcher()
 
 # Supported blockchains
@@ -32,20 +31,28 @@ BLOCKCHAINS = [
 ]
 
 
+def get_db():
+    """Get a fresh database connection for each request."""
+    if 'db' not in g:
+        g.db = MemecoinDatabase()
+    return g.db
+
+
 @app.route('/')
 def dashboard():
     """Main dashboard showing watchlist and stats."""
+    db = get_db()
     # Get watchlist tokens
-    watchlist = get_watchlist_tokens()
-    
+    watchlist = get_watchlist_tokens(db)
+
     # Get source statistics
     sources = db.get_all_sources()
-    
+
     # Calculate summary stats
     total_calls = len(watchlist)
     active_trades = sum(1 for w in watchlist if w['decision'] == 'TRADE')
     watching = sum(1 for w in watchlist if w['decision'] == 'WATCH')
-    
+
     return render_template('dashboard.html',
                          watchlist=watchlist,
                          sources=sources,
@@ -58,18 +65,19 @@ def dashboard():
 @app.route('/token/<int:call_id>')
 def token_detail(call_id):
     """Show detailed view of a specific token."""
+    db = get_db()
     # Get token data
-    token = get_token_by_id(call_id)
+    token = get_token_by_id(db, call_id)
     if not token:
         flash('Token not found', 'error')
         return redirect(url_for('dashboard'))
-    
+
     # Get performance history
-    history = get_performance_history(call_id)
-    
+    history = get_performance_history(db, call_id)
+
     # Get latest performance data
-    performance = get_token_performance(call_id)
-    
+    performance = get_token_performance(db, call_id)
+
     return render_template('token_detail.html',
                          token=token,
                          history=history,
@@ -81,27 +89,28 @@ def token_detail(call_id):
 def add_token():
     """Add a new token for analysis."""
     if request.method == 'POST':
+        db = get_db()
         contract_address = request.form.get('contract_address', '').strip()
         source = request.form.get('source', '').strip()
         blockchain = request.form.get('blockchain', 'solana')
-        
+
         if not contract_address:
             flash('Contract address is required', 'error')
             return redirect(url_for('add_token'))
-        
+
         if not source:
             flash('Source is required', 'error')
             return redirect(url_for('add_token'))
-        
+
         try:
             # Fetch token data
             print(f"🔍 Analyzing {contract_address} on {blockchain}...")
             data = fetcher.fetch_all_data(contract_address, blockchain=blockchain)
-            
+
             if not data:
                 flash('Failed to fetch token data. Please check the contract address.', 'error')
                 return redirect(url_for('add_token'))
-            
+
             # Insert into database
             call_id = db.insert_call(
                 contract_address=contract_address,
@@ -110,10 +119,10 @@ def add_token():
                 source=source,
                 blockchain=blockchain
             )
-            
+
             # Insert snapshot
             db.insert_snapshot(call_id, data)
-            
+
             # Insert initial decision (WATCH by default)
             db.insert_decision(
                 call_id=call_id,
@@ -142,30 +151,31 @@ def add_token():
                 'token_still_alive': 'yes',
                 'rug_pull_occurred': None
             })
-            
+
             flash(f"✅ Token added successfully! {data.get('token_symbol')} is now on your watchlist.", 'success')
             return redirect(url_for('token_detail', call_id=call_id))
-            
+
         except Exception as e:
             flash(f'Error adding token: {str(e)}', 'error')
             return redirect(url_for('add_token'))
-    
+
     return render_template('add_token.html', blockchains=BLOCKCHAINS)
 
 
 @app.route('/update_decision/<int:call_id>', methods=['POST'])
 def update_decision(call_id):
     """Update the decision for a token (TRADE/PASS/WATCH)."""
+    db = get_db()
     decision = request.form.get('decision')
     notes = request.form.get('notes', '')
-    
+
     if decision not in ['TRADE', 'PASS', 'WATCH']:
         flash('Invalid decision', 'error')
         return redirect(url_for('token_detail', call_id=call_id))
-    
+
     try:
         # Get current token data
-        token = get_token_by_id(call_id)
+        token = get_token_by_id(db, call_id)
         if not token:
             flash('Token not found', 'error')
             return redirect(url_for('dashboard'))
@@ -241,13 +251,14 @@ def update_decision(call_id):
         # Rollback undoes both the decision change AND the history insert.
         db.conn.rollback()
         flash(f'Error updating decision: {str(e)}', 'error')
-    
+
     return redirect(url_for('token_detail', call_id=call_id))
 
 
 @app.route('/sources')
 def sources():
     """View all sources and their performance."""
+    db = get_db()
     sources = db.get_all_sources()
     return render_template('sources.html', sources=sources)
 
@@ -255,14 +266,15 @@ def sources():
 @app.route('/api/refresh_token/<int:call_id>', methods=['POST'])
 def refresh_token(call_id):
     """API endpoint to refresh token data."""
+    db = get_db()
     try:
-        token = get_token_by_id(call_id)
+        token = get_token_by_id(db, call_id)
         if not token:
             return jsonify({'success': False, 'error': 'Token not found'})
-        
+
         # Fetch fresh data
         data = fetcher.fetch_birdeye_data(token['contract_address'], blockchain=token['blockchain'].lower())
-        
+
         if data:
             # Update performance tracking
             db.insert_or_update_performance(call_id, {
@@ -270,19 +282,19 @@ def refresh_token(call_id):
                 'current_liquidity': data.get('liquidity_usd'),
                 'token_still_alive': 'yes'
             })
-            
+
             return jsonify({'success': True, 'data': data})
         else:
             return jsonify({'success': False, 'error': 'Failed to fetch data'})
-            
+
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
 
 
-def get_watchlist_tokens():
+def get_watchlist_tokens(db):
     """Get all tokens on watchlist with their latest data."""
     db.cursor.execute('''
-        SELECT 
+        SELECT
             c.call_id,
             c.contract_address,
             c.token_symbol,
@@ -308,18 +320,18 @@ def get_watchlist_tokens():
         WHERE d.my_decision IN ('WATCH', 'TRADE')
         ORDER BY s.snapshot_timestamp DESC
     ''')
-    
+
     rows = db.cursor.fetchall()
     tokens = []
     for row in rows:
         token = dict(row)
-        
+
         # Calculate current gain/loss if we have current price
         if token.get('current_mcap') and token.get('market_cap'):
             token['mcap_change_pct'] = ((token['current_mcap'] - token['market_cap']) / token['market_cap']) * 100
         else:
             token['mcap_change_pct'] = None
-        
+
         # Format timestamps
         if token.get('snapshot_timestamp'):
             try:
@@ -327,17 +339,17 @@ def get_watchlist_tokens():
                 token['time_ago'] = format_time_ago(dt)
             except:
                 token['time_ago'] = 'Unknown'
-        
+
         tokens.append(token)
-    
+
     return tokens
 
 
-def get_token_by_id(call_id):
+def get_token_by_id(db, call_id):
     """Get token data by call_id."""
     query = db._placeholder()
     db.cursor.execute(f'''
-        SELECT 
+        SELECT
             c.*,
             s.*,
             d.my_decision as decision,
@@ -352,31 +364,31 @@ def get_token_by_id(call_id):
         JOIN my_decisions d ON c.call_id = d.call_id
         WHERE c.call_id = {query}
     ''', (call_id,))
-    
+
     row = db.cursor.fetchone()
     return dict(row) if row else None
 
 
-def get_token_performance(call_id):
+def get_token_performance(db, call_id):
     """Get performance data for a token."""
     query = db._placeholder()
     db.cursor.execute(f'''
         SELECT * FROM performance_tracking WHERE call_id = {query}
     ''', (call_id,))
-    
+
     row = db.cursor.fetchone()
     return dict(row) if row else None
 
 
-def get_performance_history(call_id):
+def get_performance_history(db, call_id):
     """Get performance history for a token."""
     query = db._placeholder()
     db.cursor.execute(f'''
-        SELECT * FROM performance_history 
+        SELECT * FROM performance_history
         WHERE call_id = {query}
         ORDER BY timestamp DESC
     ''', (call_id,))
-    
+
     rows = db.cursor.fetchall()
     return [dict(row) for row in rows]
 
@@ -385,9 +397,9 @@ def format_time_ago(dt):
     """Format datetime as 'X minutes/hours/days ago'."""
     now = datetime.now(dt.tzinfo) if dt.tzinfo else datetime.now()
     diff = now - dt
-    
+
     seconds = diff.total_seconds()
-    
+
     if seconds < 60:
         return 'Just now'
     elif seconds < 3600:
@@ -406,7 +418,7 @@ def format_currency_filter(value):
     """Template filter to format currency values."""
     if value is None:
         return 'N/A'
-    
+
     try:
         value = float(value)
         if value >= 1_000_000_000:
@@ -426,7 +438,7 @@ def format_number_filter(value):
     """Template filter to format large numbers."""
     if value is None:
         return 'N/A'
-    
+
     try:
         value = float(value)
         if value >= 1_000_000_000:
@@ -445,7 +457,7 @@ if __name__ == '__main__':
     print("🚀 Starting Memecoin Trading Analyzer Web Interface")
     print("📱 Open your browser and go to: http://localhost:5001")
     print("⚠️  Press Ctrl+C to stop the server\n")
-    
+
     # Run in debug mode for development
     import os
     port = int(os.environ.get('PORT', 5001))  # Use 5001 if 5000 is taken
