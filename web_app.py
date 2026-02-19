@@ -32,18 +32,21 @@ BLOCKCHAINS = [
 
 
 def get_db():
-    """Get a fresh database connection for each request."""
+    """Get a fresh database connection for each request (no pool, avoids stale connections)."""
     if 'db' not in g:
-        g.db = MemecoinDatabase()
+        g.db = MemecoinDatabase(use_pool=False)
     return g.db
 
 
 @app.teardown_appcontext
 def close_db(exception):
-    """Return database connection to pool after each request."""
+    """Close database connection after each request."""
     db = g.pop('db', None)
     if db is not None:
-        db.close()
+        try:
+            db.conn.close()
+        except Exception:
+            pass
 
 
 @app.route('/')
