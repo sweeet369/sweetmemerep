@@ -38,6 +38,14 @@ def get_db():
     return g.db
 
 
+@app.teardown_appcontext
+def close_db(exception):
+    """Return database connection to pool after each request."""
+    db = g.pop('db', None)
+    if db is not None:
+        db.close()
+
+
 @app.route('/')
 def dashboard():
     """Main dashboard showing watchlist and stats."""
