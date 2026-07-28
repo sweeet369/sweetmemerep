@@ -1,6 +1,6 @@
-# 🪙 Memecoin Trading Analyzer
+# 🪙 Coin Trading Analyzer
 
-A comprehensive CLI tool for analyzing memecoin trading opportunities across multiple blockchains. Track calls, analyze safety metrics, record decisions, and measure source performance over time.
+A comprehensive CLI tool for analyzing coin trading opportunities across multiple blockchains. Track calls, analyze safety metrics, record decisions, and measure source performance over time.
 
 ## Features
 
